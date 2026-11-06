@@ -439,6 +439,28 @@ impl WebViewDelegate for Delegate {
         }
     }
 
+    fn load_web_resource(&self, webview: WebView, load: servo::WebResourceLoad) {
+        let request = load.request();
+        let is_download = request.is_for_main_frame
+            && request.method == http::Method::GET
+            && klin_core::downloads::looks_like_download(&request.url);
+        if !is_download {
+            // Отпущенный запрос Servo загружает сам.
+            return;
+        }
+        let Some(tab) = self.shared.tab(&webview) else {
+            return;
+        };
+        let url = request.url.clone();
+        let referrer = request.referrer_url.clone();
+        // Ответ 204 No Content: по спецификации переход тихо отменяется, страница остаётся.
+        let response =
+            servo::WebResourceResponse::new(url.clone()).status_code(http::StatusCode::NO_CONTENT);
+        load.intercept(response).finish();
+        self.shared
+            .push(EngineEvent::DownloadRequested { tab, url, referrer });
+    }
+
     fn hide_embedder_control(&self, _webview: WebView, control_id: EmbedderControlId) {
         let found = {
             let controls = self.shared.controls.borrow();

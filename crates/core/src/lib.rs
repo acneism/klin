@@ -7,6 +7,7 @@
 
 pub mod browser;
 pub mod command;
+pub mod downloads;
 pub mod engine;
 pub mod input;
 pub mod prefs;

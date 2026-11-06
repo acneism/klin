@@ -13,6 +13,10 @@ pub enum Icon {
     Close,
     /// Значок страницы без собственного значка (в Firefox — defaultFavicon).
     Globe,
+    /// Кнопка загрузок: стрелка вниз в лоток.
+    Download,
+    /// «Показать в папке».
+    Folder,
 }
 
 /// Кнопка-значок размером `size` точек.
@@ -91,6 +95,27 @@ pub fn paint(painter: &egui::Painter, r: Rect, icon: Icon, color: Color32) {
                 Stroke::new(1.0, color),
             ));
             line(vec![at(0.02, 0.5), at(0.98, 0.5)]);
+        }
+        Icon::Download => {
+            line(vec![at(0.5, 0.0), at(0.5, 0.72)]);
+            line(vec![at(0.22, 0.45), at(0.5, 0.72), at(0.78, 0.45)]);
+            line(vec![
+                at(0.05, 0.75),
+                at(0.05, 1.0),
+                at(0.95, 1.0),
+                at(0.95, 0.75),
+            ]);
+        }
+        Icon::Folder => {
+            line(vec![
+                at(0.0, 0.15),
+                at(0.38, 0.15),
+                at(0.48, 0.28),
+                at(1.0, 0.28),
+                at(1.0, 0.92),
+                at(0.0, 0.92),
+                at(0.0, 0.15),
+            ]);
         }
         Icon::Plus => {
             line(vec![at(0.5, 0.0), at(0.5, 1.0)]);

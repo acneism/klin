@@ -1,6 +1,6 @@
 [package]
 name = "klin-downloads"
-description = "Очередь и история загрузок"
+description = "Служба загрузок Klin: скачивание файлов в фоне, имена файлов, папка загрузок"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,15 @@ repository.workspace = true
 
 [dependencies]
 klin-shared.workspace = true
-klin-profile.workspace = true
+log.workspace = true
+url.workspace = true
+# Свой HTTP-клиент: файл скачивается вне Servo (см. крейт core, модуль downloads).
+# rustls без своего провайдера — используется установленный в процессе (aws-lc-rs);
+# platform-verifier — корневые сертификаты системы.
+ureq = { version = "=3.4.2", default-features = false, features = ["rustls-no-provider", "platform-verifier", "gzip"] }
+
+[dev-dependencies]
+rustls.workspace = true
 
 [lints]
 workspace = true

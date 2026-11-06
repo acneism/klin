@@ -161,6 +161,28 @@ impl ServoEngine {
         self.shared.visible.borrow_mut().remove(&window);
     }
 
+    /// User-Agent движка: служба загрузок представляется сайтам так же, как страницы.
+    pub fn user_agent(&self) -> String {
+        servo::pref!(user_agent)
+    }
+
+    /// Заголовок `Cookie` для адреса из хранилища движка (включая HttpOnly);
+    /// `callback` вызывается в главном потоке.
+    pub fn cookie_header(&self, url: &Url, callback: impl FnOnce(Option<String>) + 'static) {
+        self.servo.site_data_manager().cookies_for_url_async(
+            url.clone(),
+            servo::CookieSource::HTTP,
+            move |cookies| {
+                let header = cookies
+                    .iter()
+                    .map(|c| format!("{}={}", c.name(), c.value()))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                callback((!header.is_empty()).then_some(header));
+            },
+        );
+    }
+
     /// Дать движку поработать и забрать накопившиеся события.
     pub fn spin(&mut self) -> Vec<EngineEvent> {
         self.servo.spin_event_loop();
@@ -323,9 +345,19 @@ impl Engine for ServoEngine {
         }
     }
 
-    fn stop(&mut self, _tab: TabId) {
-        // В API WebView нет остановки загрузки — патч в Servo (docs/spec.md).
-        warn!("stop is not supported by Servo yet");
+    fn stop(&mut self, tab: TabId) {
+        // В API WebView нет остановки загрузки, а патчи в Servo мы не отправляем: правила
+        // Servo запрещают код, написанный ИИ. Поэтому — window.stop() в странице.
+        // Отступление от Firefox: window.stop() останавливает загрузку документа и его
+        // фреймов, но не отменяет переход, который ещё не дошёл до нового документа.
+        let Some(webview) = self.webview(tab) else {
+            return;
+        };
+        webview.evaluate_javascript("window.stop()", |result| {
+            if let Err(error) = result {
+                log::debug!("window.stop() failed: {error:?}");
+            }
+        });
     }
 
     fn set_zoom(&mut self, tab: TabId, factor: f32) {

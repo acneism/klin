@@ -14,8 +14,10 @@ use klin_core::input::{Key, Modifiers, MouseButton, NamedKey};
 use klin_core::{
     Browser, Command, InputEvent, KeyChord, browser::UiEffect, command, default_shortcuts,
 };
+use klin_downloads::{DownloadRequest, DownloadService, default_download_dir};
 use klin_engine::{EngineConfig, ServoEngine, Waker};
 use klin_profile::{Profile, ProfileError};
+use klin_shared::download::DownloadEvent;
 use klin_shared::{Url, WindowId};
 use klin_storage::ContentPrefs;
 use klin_storage::content_prefs::FULL_ZOOM;
@@ -140,6 +142,11 @@ struct Running {
     picked_rx: Receiver<file_picker::Picked>,
     content_prefs: ContentPrefs,
     zoom_rx: Receiver<Vec<(String, f64)>>,
+    downloads: DownloadService,
+    download_rx: Receiver<DownloadEvent>,
+    /// Запросы на загрузку, для которых уже получены cookies движка.
+    download_start_tx: Sender<DownloadRequest>,
+    download_start_rx: Receiver<DownloadRequest>,
     browser: Browser,
     shortcuts: Vec<(KeyChord, Command)>,
     // Порядок важен: движок (и GL-контексты окон) отпускается раньше окон ОС.
@@ -231,12 +238,24 @@ impl Running {
             });
         }
         let (picked_tx, picked_rx) = channel();
+        let (download_tx, download_rx) = channel();
+        let downloads = {
+            let proxy = proxy.clone();
+            DownloadService::new(default_download_dir(), download_tx, move || {
+                let _ = proxy.send_event(Wake);
+            })
+        };
+        let (download_start_tx, download_start_rx) = channel();
         let mut running = Self {
             proxy,
             picked_tx,
             picked_rx,
             content_prefs,
             zoom_rx,
+            downloads,
+            download_rx,
+            download_start_tx,
+            download_start_rx,
             browser: Browser::new(),
             shortcuts: default_shortcuts(),
             engine,
@@ -344,6 +363,19 @@ impl Running {
                 .answer(&mut self.engine, picked.tab, picked.id, reply);
             self.redraw_tab(picked.tab);
         }
+        while let Ok(request) = self.download_start_rx.try_recv() {
+            self.downloads.start(request);
+        }
+        let mut downloads_changed = false;
+        while let Ok(event) = self.download_rx.try_recv() {
+            self.browser.download_event(event);
+            downloads_changed = true;
+        }
+        if downloads_changed {
+            for w in &self.windows {
+                w.window.request_redraw();
+            }
+        }
         while let Ok(values) = self.zoom_rx.try_recv() {
             let values = values.into_iter().map(|(site, zoom)| (site, zoom as f32));
             self.browser.load_site_zoom(&mut self.engine, values);
@@ -445,6 +477,18 @@ impl Running {
             Action::Execute(cmd) => self.execute(event_loop, id, cmd),
             Action::SelectTab(tab) => self.browser.select_tab(&mut self.engine, tab),
             Action::MoveTab { tab, index } => self.browser.move_tab(tab, index),
+            Action::CancelDownload(download) => self.downloads.cancel(download),
+            Action::OpenDownload(path) => {
+                if let Err(e) = klin_platform_win::shell::open(&path) {
+                    warn!("cannot open {}: {e}", path.display());
+                }
+            }
+            Action::ShowDownloadInFolder(path) => {
+                if let Err(e) = klin_platform_win::shell::show_in_folder(&path) {
+                    warn!("cannot show {}: {e}", path.display());
+                }
+            }
+            Action::ClearDownloads => self.browser.clear_downloads(),
             Action::CloseTab(tab) => {
                 let effects = self.browser.close_tab(&mut self.engine, tab);
                 self.apply(event_loop, effects);
@@ -499,6 +543,38 @@ impl Running {
                                 let _ = proxy.send_event(Wake);
                             },
                         );
+                    }
+                }
+                UiEffect::StartDownload {
+                    window,
+                    url,
+                    referrer,
+                } => {
+                    // Файл скачивает служба загрузок с cookies и User-Agent движка.
+                    let user_agent = self.engine.user_agent();
+                    let tx = self.download_start_tx.clone();
+                    let proxy = self.proxy.clone();
+                    let request_url = url.clone();
+                    self.engine.cookie_header(&url, move |cookie| {
+                        let request = DownloadRequest {
+                            url: request_url,
+                            referrer,
+                            cookie,
+                            user_agent,
+                        };
+                        let _ = tx.send(request);
+                        let _ = proxy.send_event(Wake);
+                    });
+                    // Как в Firefox (`browser.download.alwaysOpenPanel`): панель открывается сама.
+                    if let Some(w) = self.win_mut(window) {
+                        w.ui.open_downloads();
+                        w.window.request_redraw();
+                    }
+                }
+                UiEffect::ToggleDownloadsPanel(window) => {
+                    if let Some(w) = self.win_mut(window) {
+                        w.ui.toggle_downloads();
+                        w.window.request_redraw();
                     }
                 }
                 UiEffect::SiteZoomChanged { site, zoom } => {

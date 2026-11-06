@@ -72,6 +72,12 @@ pub enum EngineEvent {
     NewFrame {
         tab: TabId,
     },
+    /// Переход распознан как загрузка файла и отменён в движке; файл скачивает служба загрузок.
+    DownloadRequested {
+        tab: TabId,
+        url: Url,
+        referrer: Option<Url>,
+    },
     Closed {
         tab: TabId,
     },

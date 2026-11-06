@@ -73,6 +73,14 @@ pub enum UiEffect {
         request: Box<PageRequest>,
     },
     Redraw(TabId),
+    /// Начать загрузку файла (ответ на [`EngineEvent::DownloadRequested`]).
+    StartDownload {
+        window: WindowId,
+        url: Url,
+        referrer: Option<Url>,
+    },
+    /// Открыть или закрыть панель загрузок (Ctrl+J).
+    ToggleDownloadsPanel(WindowId),
     /// Масштаб сайта изменился и должен быть сохранён (`None` — сброшен к 100 %).
     SiteZoomChanged {
         site: String,
@@ -88,6 +96,7 @@ pub struct Browser {
     tabs: HashMap<TabId, Tab>,
     site_zoom: SiteZoom,
     search: SearchEngine,
+    downloads: Vec<klin_shared::download::Download>,
 }
 
 impl Browser {
@@ -115,6 +124,66 @@ impl Browser {
         self.window(window)?
             .selected_tab()
             .and_then(|t| self.tabs.get(&t))
+    }
+
+    /// Загрузки этого сеанса, новые — в конце.
+    pub fn downloads(&self) -> &[klin_shared::download::Download] {
+        &self.downloads
+    }
+
+    /// Применить сообщение службы загрузок.
+    pub fn download_event(&mut self, event: klin_shared::download::DownloadEvent) {
+        use klin_shared::download::{Download, DownloadEvent as E, DownloadState as S};
+        fn find(downloads: &mut [Download], id: klin_shared::DownloadId) -> Option<&mut Download> {
+            downloads.iter_mut().find(|d| d.id == id)
+        }
+        match event {
+            E::Started {
+                id,
+                url,
+                path,
+                total,
+            } => self.downloads.push(Download {
+                id,
+                url,
+                path,
+                state: S::InProgress { received: 0, total },
+            }),
+            E::Progress {
+                id,
+                received,
+                total,
+            } => {
+                if let Some(d) = find(&mut self.downloads, id) {
+                    d.state = S::InProgress { received, total };
+                }
+            }
+            E::Finished { id, size } => {
+                if let Some(d) = find(&mut self.downloads, id) {
+                    d.state = S::Finished { size };
+                }
+            }
+            E::Failed { id, error } => {
+                if let Some(d) = find(&mut self.downloads, id) {
+                    d.state = S::Failed { error };
+                }
+            }
+            E::Canceled { id } => {
+                if let Some(d) = find(&mut self.downloads, id) {
+                    d.state = S::Canceled;
+                }
+            }
+        }
+    }
+
+    /// Убрать из списка завершённые, отменённые и неудачные загрузки.
+    pub fn clear_downloads(&mut self) {
+        self.downloads.retain(|d| {
+            matches!(
+                d.state,
+                klin_shared::download::DownloadState::InProgress { .. }
+            )
+        });
     }
 
     pub fn search_engine(&self) -> &SearchEngine {
@@ -419,6 +488,8 @@ impl Browser {
             SelectTab(n) => self.select_index(engine, window, usize::from(n)),
             SelectLastTab if count > 0 => self.select_index(engine, window, count - 1),
             FocusUrlBar => return vec![UiEffect::FocusUrlBar(window)],
+            // Отступление от Firefox: Ctrl+J открывает панель загрузок, а не окно «Библиотека».
+            ShowDownloads => return vec![UiEffect::ToggleDownloadsPanel(window)],
             Back | Forward | Reload | ReloadSkipCache | Stop | Home | ZoomIn | ZoomOut
             | ZoomReset => {
                 if let Some(tab) = selected {
@@ -434,7 +505,6 @@ impl Browser {
             | ShowAllBookmarks
             | ToggleHistorySidebar
             | ShowAllHistory
-            | ShowDownloads
             | ToggleReaderMode
             | ToggleFullScreen => return vec![UiEffect::NotImplemented(command)],
         }
@@ -453,7 +523,14 @@ impl Browser {
             Forward => engine.go_forward(tab),
             Reload => engine.reload(tab, false),
             ReloadSkipCache => engine.reload(tab, true),
-            Stop => engine.stop(tab),
+            Stop => {
+                engine.stop(tab);
+                // Прерванный документ не присылает `load`: вкладка считается загруженной,
+                // иначе индикатор загрузки крутился бы бесконечно.
+                if let Some(t) = self.tabs.get_mut(&tab) {
+                    t.load_status = LoadStatus::Complete;
+                }
+            }
             Home => {
                 if let Ok(url) = Url::parse(prefs::HOMEPAGE) {
                     engine.load(tab, &url);
@@ -621,6 +698,24 @@ impl Browser {
                 return vec![UiEffect::Redraw(tab)];
             }
             EngineEvent::NewFrame { tab } => return vec![UiEffect::Redraw(tab)],
+            EngineEvent::DownloadRequested { tab, url, referrer } => {
+                // Переход отменён движком: вкладка остаётся на прежней странице. Если это была
+                // новая пустая вкладка, открытая только ради файла, Firefox её закрывает.
+                let Some(t) = self.tabs.get_mut(&tab) else {
+                    return Vec::new();
+                };
+                let mut effects = vec![UiEffect::StartDownload {
+                    window: t.window,
+                    url,
+                    referrer,
+                }];
+                t.load_status = LoadStatus::Complete;
+                let blank = t.opener.is_some() && !t.can_back && t.title.is_empty();
+                if blank {
+                    effects.extend(self.close_tab(engine, tab));
+                }
+                return effects;
+            }
             EngineEvent::Closed { tab } => {
                 // window.close() из страницы.
                 if self.tabs.contains_key(&tab) {
@@ -918,6 +1013,7 @@ mod tests {
             b.execute(&mut e, w, c);
         }
         let tail: Vec<_> = e.calls.iter().rev().take(4).rev().cloned().collect();
+        assert_eq!(b.tab(tab).unwrap().load_status, LoadStatus::Complete);
         assert_eq!(
             tail,
             [
@@ -981,6 +1077,69 @@ mod tests {
             },
         );
         assert!(b.tab(tab).unwrap().favicon.is_none());
+    }
+
+    #[test]
+    fn download_request_starts_download_and_closes_blank_tab() {
+        let (mut b, mut e, w) = setup();
+        let opener = b.window(w).unwrap().tabs[0];
+        b.handle_event(
+            &mut e,
+            EngineEvent::OpenTabRequested {
+                opener,
+                url: url("https://files.example/a.zip"),
+                disposition: Disposition::ForegroundTab,
+                created: None,
+            },
+        );
+        let blank = b.window(w).unwrap().tabs[1];
+        let effects = b.handle_event(
+            &mut e,
+            EngineEvent::DownloadRequested {
+                tab: blank,
+                url: url("https://files.example/a.zip"),
+                referrer: None,
+            },
+        );
+        assert_eq!(
+            effects[0],
+            UiEffect::StartDownload {
+                window: w,
+                url: url("https://files.example/a.zip"),
+                referrer: None
+            }
+        );
+        assert_eq!(b.window(w).unwrap().tabs, [opener]);
+    }
+
+    #[test]
+    fn download_events_update_the_list() {
+        use klin_shared::DownloadId;
+        use klin_shared::download::{DownloadEvent as E, DownloadState as S};
+        let mut b = Browser::new();
+        let id = DownloadId::next();
+        b.download_event(E::Started {
+            id,
+            url: url("https://f.example/x.zip"),
+            path: "x.zip".into(),
+            total: Some(10),
+        });
+        b.download_event(E::Progress {
+            id,
+            received: 4,
+            total: Some(10),
+        });
+        assert_eq!(
+            b.downloads()[0].state,
+            S::InProgress {
+                received: 4,
+                total: Some(10)
+            }
+        );
+        b.download_event(E::Finished { id, size: 10 });
+        assert_eq!(b.downloads()[0].state, S::Finished { size: 10 });
+        b.clear_downloads();
+        assert!(b.downloads().is_empty());
     }
 
     #[test]

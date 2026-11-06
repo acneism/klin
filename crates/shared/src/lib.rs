@@ -48,6 +48,13 @@ id_type!(
     RequestId,
     "request#"
 );
+id_type!(
+    /// Загрузка файла.
+    DownloadId,
+    "download#"
+);
+
+pub mod download;
 
 /// Состояние загрузки страницы — как индикатор во вкладке Firefox.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]

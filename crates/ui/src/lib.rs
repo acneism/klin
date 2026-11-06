@@ -5,6 +5,7 @@
 //!
 //! Строки интерфейса пока записаны здесь; в 0.2 их заменят строки Firefox в формате Fluent.
 
+mod downloads;
 mod favicons;
 mod icons;
 mod requests;
@@ -28,6 +29,10 @@ pub enum Action {
     Navigate(String),
     /// Клик по странице: фокус ввода переходит к ней.
     FocusPage,
+    CancelDownload(klin_shared::DownloadId),
+    OpenDownload(std::path::PathBuf),
+    ShowDownloadInFolder(std::path::PathBuf),
+    ClearDownloads,
     /// Вкладку перетащили на позицию `index`.
     MoveTab {
         tab: TabId,
@@ -62,6 +67,8 @@ pub struct BrowserUi {
     shown_tab: Option<TabId>,
     requests: requests::RequestUi,
     favicons: favicons::Favicons,
+    downloads_open: bool,
+    downloads_button: Option<Rect>,
 }
 
 fn url_bar_id() -> egui::Id {
@@ -78,6 +85,16 @@ impl BrowserUi {
     /// Поставить фокус в адресную строку и выделить адрес (Ctrl+L, Alt+D, F6, новая вкладка).
     pub fn focus_url_bar(&mut self) {
         self.focus_url_bar = true;
+    }
+
+    /// Открыть или закрыть панель загрузок (кнопка, Ctrl+J).
+    pub fn toggle_downloads(&mut self) {
+        self.downloads_open = !self.downloads_open;
+    }
+
+    /// Открыть панель загрузок (при начале загрузки — `browser.download.alwaysOpenPanel`).
+    pub fn open_downloads(&mut self) {
+        self.downloads_open = true;
     }
 
     /// Нарисовать окно внутри корневого `Ui` (из `Context::run_ui`).
@@ -98,7 +115,7 @@ impl BrowserUi {
             self.tab_strip(ui, browser, window, &mut actions);
         });
         egui::Panel::top("klin-nav").show(root, |ui| {
-            self.nav_bar(ui, selected, &mut actions);
+            self.nav_bar(ui, selected, browser.downloads(), &mut actions);
         });
 
         let mut page_rect = Rect::NOTHING;
@@ -120,6 +137,12 @@ impl BrowserUi {
                     status_panel(ui, page_rect, status);
                 }
             });
+
+        // Панель может быть запрошена раньше, чем появится кнопка (загрузка ещё не началась):
+        // тогда флаг ждёт кнопку.
+        if let (Some(anchor), true) = (self.downloads_button, self.downloads_open) {
+            self.downloads_open = downloads::panel(&ctx, anchor, browser.downloads(), &mut actions);
+        }
 
         let page_blocked = match selected {
             Some(tab) => self.requests.show(&ctx, tab, page_rect, &mut actions),
@@ -224,7 +247,13 @@ impl BrowserUi {
         ui.add_space(2.0);
     }
 
-    fn nav_bar(&mut self, ui: &mut egui::Ui, tab: Option<&Tab>, actions: &mut Vec<Action>) {
+    fn nav_bar(
+        &mut self,
+        ui: &mut egui::Ui,
+        tab: Option<&Tab>,
+        downloads: &[klin_shared::download::Download],
+        actions: &mut Vec<Action>,
+    ) {
         ui.add_space(3.0);
         ui.horizontal(|ui| {
             let (can_back, can_forward) =
@@ -277,7 +306,16 @@ impl BrowserUi {
                 "Домашняя страница (Alt+Home)",
                 Command::Home,
             );
-            self.url_bar(ui, actions);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                self.downloads_button = None;
+                if let Some(button) = downloads::button(ui, downloads) {
+                    if button.clicked() {
+                        self.downloads_open = !self.downloads_open;
+                    }
+                    self.downloads_button = Some(button.rect);
+                }
+                self.url_bar(ui, actions);
+            });
         });
         ui.add_space(3.0);
     }
