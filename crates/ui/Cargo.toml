@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 klin-shared.workspace = true
 klin-core.workspace = true
+egui.workspace = true
 
 [lints]
 workspace = true

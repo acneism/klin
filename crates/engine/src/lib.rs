@@ -1,8 +1,12 @@
 //! Адаптер движка Servo — единственный крейт Klin, который зависит от `servo`.
 //!
 //! Когда API Servo меняется (ежемесячные выпуски могут его ломать), правится только
-//! этот крейт. Наружу он отдаёт реализацию [`klin_core::Engine`] и несколько методов
-//! для цикла событий: [`ServoEngine::spin`], [`ServoEngine::paint`], [`ServoEngine::resize`].
+//! этот крейт. Наружу он отдаёт реализацию [`klin_core::Engine`] и методы для цикла событий
+//! и отрисовки.
+//!
+//! Отрисовка — как в servoshell: страницы рисуются во внеэкранный буфер
+//! (`OffscreenRenderingContext`), интерфейс egui рисуется в окно через тот же GL-контекст,
+//! а страница копируется в свою область окна функцией из [`ServoEngine::page_blitter`].
 
 mod convert;
 mod delegate;
@@ -19,8 +23,8 @@ use klin_shared::{RequestId, TabId, Url, WindowId};
 use log::warn;
 use raw_window_handle::{DisplayHandle, WindowHandle};
 use servo::{
-    EventLoopWaker, RenderingContext, Servo, ServoBuilder, WebView, WebViewBuilder,
-    WindowRenderingContext,
+    EventLoopWaker, OffscreenRenderingContext, RenderingContext, Servo, ServoBuilder, WebView,
+    WebViewBuilder, WindowRenderingContext,
 };
 
 use crate::delegate::{Delegate, Pending, Shared};
@@ -47,6 +51,14 @@ impl EventLoopWaker for Waker {
     }
 }
 
+/// См. [`ServoEngine::page_blitter`].
+pub type PageBlitter = Box<dyn Fn(&glow::Context, [i32; 4]) + Send + Sync>;
+
+/// Servo не принимает буферы нулевого размера (свёрнутое окно).
+fn non_zero(width: u32, height: u32) -> dpi::PhysicalSize<u32> {
+    dpi::PhysicalSize::new(width.max(1), height.max(1))
+}
+
 #[derive(Debug)]
 pub struct EngineError(String);
 
@@ -64,7 +76,9 @@ impl std::error::Error for EngineError {}
 /// рисуются в контекст первого окна.
 pub struct ServoEngine {
     servo: Servo,
-    rendering_context: Rc<WindowRenderingContext>,
+    window_context: Rc<WindowRenderingContext>,
+    /// Сюда рисуют все WebView; размер — область страницы в окне.
+    page_context: Rc<OffscreenRenderingContext>,
     shared: Rc<Shared>,
     delegate: Rc<Delegate>,
     scale: f32,
@@ -79,11 +93,11 @@ impl ServoEngine {
         scale: f32,
         waker: Waker,
     ) -> Result<Self, EngineError> {
-        let rendering_context = Rc::new(
+        let window_context = Rc::new(
             WindowRenderingContext::new(display, window, dpi::PhysicalSize::new(size.0, size.1))
                 .map_err(|e| EngineError(format!("rendering context: {e:?}")))?,
         );
-        rendering_context
+        window_context
             .make_current()
             .map_err(|e| EngineError(format!("make_current: {e:?}")))?;
 
@@ -105,12 +119,14 @@ impl ServoEngine {
             pending: RefCell::new(HashMap::new()),
             visible: RefCell::new(None),
         });
-        let rc: Rc<dyn RenderingContext> = rendering_context.clone();
+        let page_context = Rc::new(window_context.offscreen_context(non_zero(size.0, size.1)));
+        let rc: Rc<dyn RenderingContext> = page_context.clone();
         let delegate = Delegate::new(shared.clone(), rc, scale);
 
         Ok(Self {
             servo,
-            rendering_context,
+            window_context,
+            page_context,
             shared,
             delegate,
             scale,
@@ -123,17 +139,51 @@ impl ServoEngine {
         self.shared.events.borrow_mut().drain(..).collect()
     }
 
-    /// Нарисовать видимую вкладку и показать кадр.
-    pub fn paint(&self) {
+    /// GL-контекст окна для отрисовки интерфейса (egui_glow).
+    pub fn gl(&self) -> Arc<glow::Context> {
+        self.window_context.glow_gl_api()
+    }
+
+    /// Начать кадр: нарисовать видимую страницу во внеэкранный буфер и подготовить окно.
+    pub fn begin_frame(&self) {
+        if let Err(e) = self.window_context.make_current() {
+            warn!("make_current failed: {e:?}");
+        }
         if let Some(webview) = self.visible_webview() {
             webview.paint();
         }
-        self.rendering_context.present();
+        self.window_context.prepare_for_rendering();
     }
 
-    pub fn resize(&self, width: u32, height: u32) {
-        let size = dpi::PhysicalSize::new(width, height);
-        self.rendering_context.resize(size);
+    /// Показать готовый кадр окна.
+    pub fn present(&self) {
+        self.window_context.present();
+    }
+
+    /// Функция, копирующая страницу в прямоугольник окна `[x, y, ширина, высота]`
+    /// в пикселях устройства, начало координат — внизу слева (как в OpenGL).
+    pub fn page_blitter(&self) -> Option<PageBlitter> {
+        let blit = self.page_context.render_to_parent_callback()?;
+        Some(Box::new(move |gl, [x, y, w, h]| {
+            blit(
+                gl,
+                euclid::Rect::new(euclid::Point2D::new(x, y), euclid::Size2D::new(w, h)),
+            )
+        }))
+    }
+
+    /// Размер окна изменился.
+    pub fn resize_window(&self, width: u32, height: u32) {
+        self.window_context.resize(non_zero(width, height));
+    }
+
+    /// Размер области страницы изменился (окно минус панели интерфейса).
+    pub fn resize_page(&self, width: u32, height: u32) {
+        let size = non_zero(width, height);
+        if self.page_context.size() == size {
+            return;
+        }
+        self.page_context.resize(size);
         for webview in self.shared.webviews.borrow().values() {
             webview.resize(size);
         }
@@ -170,7 +220,7 @@ impl Engine for ServoEngine {
             // Отдельного контекста хранилища в API Servo пока не нашли — проверить до 0.2.
             warn!("private browsing is not isolated yet");
         }
-        let rc: Rc<dyn RenderingContext> = self.rendering_context.clone();
+        let rc: Rc<dyn RenderingContext> = self.page_context.clone();
         let webview = WebViewBuilder::new(&self.servo, rc)
             .url(protocol::internal_url(url))
             .hidpi_scale_factor(Scale::new(self.scale))

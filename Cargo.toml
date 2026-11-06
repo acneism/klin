@@ -35,7 +35,14 @@ servo = { version = "=0.7.0", default-features = true }
 url = "2.5"
 thiserror = "2"
 log = "0.4"
-winit = "0.30"
+winit = "0.30.13"
+# egui 0.36 is built on glow 0.17 and winit 0.30, the same versions as servo 0.7.0.
+# Not 0.37: epaint 0.37 rasterizes glyphs with vello_cpu 0.2 and never calls flush(),
+# which panics once servo-canvas enables vello_cpu's `multithreading` feature.
+egui = "=0.36.2"
+egui-winit = { version = "=0.36.2", default-features = false, features = ["clipboard", "links"] }
+egui_glow = { version = "=0.36.2", features = ["winit"] }
+glow = "0.17"
 euclid = "0.22"
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 

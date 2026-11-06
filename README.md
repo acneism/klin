@@ -4,9 +4,10 @@ A desktop web browser for Windows built on the [Servo](https://servo.org) engine
 Klin's own code is written in Rust. Features and behavior follow Firefox: keyboard
 shortcuts, data formats, settings.
 
-> **Status: stage 0, prototype.** Klin opens a window with a Servo-rendered page, and
-> Firefox keyboard shortcuts work through the core. There is no on-screen tab strip or
-> address bar yet; they arrive with the egui interface. Not ready for everyday use.
+> **Status: stage 0, prototype.** One window with a tab strip, navigation buttons and an
+> address bar drawn with egui; pages are rendered by Servo. Firefox keyboard shortcuts work
+> through the core (Ctrl+T, Ctrl+W, Ctrl+Shift+T, Ctrl+Tab, Ctrl+L, Alt+←/→, F5, Ctrl+±/0 and
+> more). No history, bookmarks, downloads or dialogs yet. Not ready for everyday use.
 
 The specification and architecture are in [docs/spec.md](docs/spec.md) (in Russian).
 
@@ -39,7 +40,7 @@ monthly breaking changes in Servo's API are fixed in one place.
 | `core` | window and tab model, commands, shortcuts, URIFixup, zoom | 0.1 foundation, covered by tests |
 | `engine` | `ServoEngine`: the `Engine` trait implemented on servo 0.7.0 | prototype |
 | `internal-pages` | about: pages served through the `klin:` scheme | about:newtab |
-| `ui` | egui interface | next step |
+| `ui` | egui interface: tabs, navigation, address bar, link status, crash page | prototype |
 | `profile`, `storage`, `sync`, `remote-settings`, `content-blocking`, `downloads`, `extensions`, `importer`, `platform-win` | services and Windows integration | stubs, scheduled per the version plan |
 
 ## License
