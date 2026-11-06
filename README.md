@@ -13,7 +13,9 @@ shortcuts, data formats, settings.
 > `content-prefs.sqlite`. Stop (Esc) and file downloads work without changes to Servo,
 > with recorded limitations (see the spec). History and bookmarks are stored in
 > `places.sqlite` (ported from Mozilla's application-services): URL bar suggestions ranked by
-> frecency, Ctrl+D with a star button, Ctrl+H history sidebar. Not ready for everyday use.
+> frecency, Ctrl+D with a star button, Ctrl+H history sidebar. The session is saved in
+> Firefox's `sessionstore.jsonlz4` format and restored after a crash, or after a normal exit with
+> `browser.startup.page = 3` in `prefs.js`/`user.js`. Not ready for everyday use.
 
 The specification and architecture are in [docs/spec.md](docs/spec.md) (in Russian).
 

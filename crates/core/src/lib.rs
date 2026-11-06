@@ -11,6 +11,7 @@ pub mod downloads;
 pub mod engine;
 pub mod input;
 pub mod prefs;
+pub mod session;
 pub mod testing;
 pub mod urifixup;
 pub mod zoom;

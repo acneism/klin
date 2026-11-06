@@ -3377,6 +3377,7 @@ dependencies = [
  "klin-shared",
  "lazy_static",
  "log",
+ "lz4_flex",
  "memchr",
  "parking_lot",
  "percent-encoding",
@@ -3547,6 +3548,12 @@ checksum = "0fae87c125b03c1d2c0150c90365d7d6bcc53fb73a9acaef207d2d065860f062"
 dependencies = [
  "imgref",
 ]
+
+[[package]]
+name = "lz4_flex"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ecbdfe44b1bd960b68170b417450a628c43f7cf56bb3c5317e61cb230ee7f226"
 
 [[package]]
 name = "mach2"

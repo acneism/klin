@@ -38,8 +38,7 @@ pub(crate) struct Shared {
 }
 
 impl Shared {
-    pub fn register(&self, webview: WebView, window: WindowId) -> TabId {
-        let tab = TabId::next();
+    pub fn register(&self, webview: WebView, window: WindowId, tab: TabId) -> TabId {
         self.tabs.borrow_mut().insert(webview.id(), tab);
         self.webviews.borrow_mut().insert(tab, webview);
         self.tab_window.borrow_mut().insert(tab, window);
@@ -270,12 +269,12 @@ impl WebViewDelegate for Delegate {
     }
 
     fn notify_history_changed(&self, webview: WebView, entries: Vec<Url>, current: usize) {
-        let can_back = current > 0;
-        let can_forward = current + 1 < entries.len();
+        // Внутренние страницы (klin:) ядро видит как about:-адреса.
+        let entries = entries.into_iter().map(protocol::display_url).collect();
         self.with_tab(&webview, |tab| EngineEvent::HistoryChanged {
             tab,
-            can_back,
-            can_forward,
+            entries,
+            index: current,
         });
     }
 
@@ -313,7 +312,7 @@ impl WebViewDelegate for Delegate {
         let url = webview
             .url()
             .unwrap_or_else(|| Url::parse("about:blank").expect("valid"));
-        let created = self.shared.register(webview, window);
+        let created = self.shared.register(webview, window, TabId::next());
         let background = self
             .shared
             .background_opener

@@ -55,6 +55,7 @@ id_type!(
 );
 
 pub mod download;
+pub mod session;
 
 /// Состояние загрузки страницы — как индикатор во вкладке Firefox.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]

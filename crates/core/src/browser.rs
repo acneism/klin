@@ -32,6 +32,12 @@ pub struct Tab {
     pub bookmarked: Option<bool>,
     /// Как начат текущий переход — тип посещения для истории.
     pub next_visit: Option<VisitKind>,
+    /// История переходов (адреса) и текущая позиция в ней — для файла сессии.
+    pub history: Vec<Url>,
+    pub history_index: usize,
+    /// У вкладки есть страница в движке. Восстановленные вкладки создаются без неё
+    /// и загружаются при первом выборе (`browser.sessionstore.restore_on_demand`).
+    pub loaded: bool,
     /// Движок уже сообщил адрес документа. До этого `url` — только запрошенный адрес,
     /// и первый `UrlChanged` с тем же адресом — это настоящее посещение.
     pub committed: bool,
@@ -62,6 +68,11 @@ pub struct ClosedTab {
     pub index: usize,
     pub url: Option<Url>,
     pub title: String,
+    /// История переходов вкладки на момент закрытия.
+    pub history: Vec<Url>,
+    pub history_index: usize,
+    /// Время закрытия, мс с начала эпохи Unix.
+    pub closed_at_ms: u64,
 }
 
 /// Тип посещения для истории — как переходы (transition) в Firefox.
@@ -131,8 +142,8 @@ pub enum UiEffect {
 
 #[derive(Debug, Default)]
 pub struct Browser {
-    windows: Vec<Window>,
-    tabs: HashMap<TabId, Tab>,
+    pub(crate) windows: Vec<Window>,
+    pub(crate) tabs: HashMap<TabId, Tab>,
     site_zoom: SiteZoom,
     search: SearchEngine,
     downloads: Vec<klin_shared::download::Download>,
@@ -151,7 +162,7 @@ impl Browser {
         self.windows.iter().find(|w| w.id == id)
     }
 
-    fn window_mut(&mut self, id: WindowId) -> Option<&mut Window> {
+    pub(crate) fn window_mut(&mut self, id: WindowId) -> Option<&mut Window> {
         self.windows.iter_mut().find(|w| w.id == id)
     }
 
@@ -275,7 +286,11 @@ impl Browser {
         let private = self.window(window)?.private;
         let tab = match created {
             Some(tab) => tab,
-            None => engine.open_tab(window, &url, private),
+            None => {
+                let tab = TabId::next();
+                engine.open_tab(tab, window, &url, private);
+                tab
+            }
         };
         let zoom = host(&url).map_or(1.0, |h| self.site_zoom.get(h));
         if zoom != 1.0 {
@@ -300,6 +315,9 @@ impl Browser {
                 bookmarked: None,
                 next_visit: None,
                 committed: false,
+                history: Vec::new(),
+                history_index: 0,
+                loaded: true,
             },
         );
         let tabs = &self.tabs;
@@ -337,7 +355,7 @@ impl Browser {
         Some(tab)
     }
 
-    fn select_index(&mut self, engine: &mut dyn Engine, window: WindowId, index: usize) {
+    pub(crate) fn select_index(&mut self, engine: &mut dyn Engine, window: WindowId, index: usize) {
         let Some(win) = self.window_mut(window) else {
             return;
         };
@@ -350,7 +368,31 @@ impl Browser {
         if let Some(old) = old.filter(|&o| o != new) {
             engine.set_visible(old, false);
         }
+        self.ensure_loaded(engine, new);
         engine.set_visible(new, true);
+    }
+
+    /// Загрузить отложенную (восстановленную) вкладку.
+    fn ensure_loaded(&mut self, engine: &mut dyn Engine, tab: TabId) {
+        let private = self.is_private_tab(tab);
+        let Some(t) = self.tabs.get_mut(&tab) else {
+            return;
+        };
+        if t.loaded {
+            return;
+        }
+        t.loaded = true;
+        t.load_status = LoadStatus::Started;
+        let url = t.url.clone().unwrap_or_else(new_tab_url);
+        let window = t.window;
+        engine.open_tab(tab, window, &url, private);
+        let zoom = host(&url).map_or(1.0, |h| self.site_zoom.get(h));
+        if let Some(t) = self.tabs.get_mut(&tab) {
+            t.zoom = zoom;
+        }
+        if zoom != 1.0 {
+            engine.set_zoom(tab, zoom);
+        }
     }
 
     pub fn select_tab(&mut self, engine: &mut dyn Engine, tab: TabId) {
@@ -406,6 +448,9 @@ impl Browser {
             index,
             url: closed.url,
             title: closed.title,
+            history: closed.history,
+            history_index: closed.history_index,
+            closed_at_ms: now_ms(),
         });
         if win.closed_tabs.len() > prefs::MAX_TABS_UNDO {
             win.closed_tabs.remove(0);
@@ -766,12 +811,14 @@ impl Browser {
             }
             EngineEvent::HistoryChanged {
                 tab,
-                can_back,
-                can_forward,
+                entries,
+                index,
             } => {
                 if let Some(t) = self.tabs.get_mut(&tab) {
-                    t.can_back = can_back;
-                    t.can_forward = can_forward;
+                    t.can_back = index > 0;
+                    t.can_forward = index + 1 < entries.len();
+                    t.history = entries;
+                    t.history_index = index;
                 }
             }
             EngineEvent::OpenTabRequested {
@@ -871,7 +918,13 @@ fn is_bookmarkable(url: &Url) -> bool {
     matches!(url.scheme(), "http" | "https" | "file")
 }
 
-fn new_tab_url() -> Url {
+pub(crate) fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
+pub(crate) fn new_tab_url() -> Url {
     Url::parse(prefs::NEW_TAB_URL).expect("valid constant URL")
 }
 

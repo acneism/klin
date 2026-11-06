@@ -15,3 +15,204 @@ pub const INSERT_RELATED_AFTER_CURRENT: bool = true;
 pub const ZOOM_SITE_SPECIFIC: bool = true;
 /// `browser.sessionstore.interval`, мс
 pub const SESSIONSTORE_INTERVAL_MS: u64 = 15_000;
+
+/// `browser.startup.page`: 0 — пустая страница, 1 — домашняя, 3 — предыдущая сессия.
+pub const STARTUP_PAGE: &str = "browser.startup.page";
+/// `browser.sessionstore.resume_from_crash`
+pub const RESUME_FROM_CRASH: &str = "browser.sessionstore.resume_from_crash";
+
+/// Значение настройки из `prefs.js`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PrefValue {
+    Bool(bool),
+    Int(i64),
+    String(String),
+}
+
+/// Настройки пользователя из `prefs.js` и `user.js` (формат Firefox: `user_pref("имя", значение);`).
+/// Перенос разбора из `modules/libpref/parser` (MPL 2.0), упрощённый: без `sticky_pref`
+/// и атрибутов `locked`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct UserPrefs {
+    values: std::collections::HashMap<String, PrefValue>,
+}
+
+impl UserPrefs {
+    /// Разобрать файлы по порядку; поздние значения перекрывают ранние (`user.js` после `prefs.js`).
+    pub fn parse_files(texts: &[&str]) -> Self {
+        let mut prefs = Self::default();
+        for text in texts {
+            for (name, value) in parse(text) {
+                prefs.values.insert(name, value);
+            }
+        }
+        prefs
+    }
+
+    pub fn get(&self, name: &str) -> Option<&PrefValue> {
+        self.values.get(name)
+    }
+
+    pub fn int(&self, name: &str, default: i64) -> i64 {
+        match self.get(name) {
+            Some(PrefValue::Int(v)) => *v,
+            _ => default,
+        }
+    }
+
+    pub fn bool(&self, name: &str, default: bool) -> bool {
+        match self.get(name) {
+            Some(PrefValue::Bool(v)) => *v,
+            _ => default,
+        }
+    }
+
+    /// `browser.startup.page` (по умолчанию в Firefox — 1, домашняя страница).
+    pub fn startup_page(&self) -> i64 {
+        self.int(STARTUP_PAGE, 1)
+    }
+
+    /// `browser.sessionstore.resume_from_crash` (по умолчанию — true).
+    pub fn resume_from_crash(&self) -> bool {
+        self.bool(RESUME_FROM_CRASH, true)
+    }
+}
+
+fn parse(text: &str) -> Vec<(String, PrefValue)> {
+    let text = strip_comments(text);
+    let mut out = Vec::new();
+    let mut rest = text.as_str();
+    while let Some(start) = rest.find("pref(") {
+        // Принимаются pref(, user_pref( и sticky_pref(.
+        let call = &rest[start + 5..];
+        let Some(end) = call.find(");") else { break };
+        let args = &call[..end];
+        rest = &call[end + 2..];
+        let Some((name, value)) = split_args(args) else {
+            continue;
+        };
+        if let Some(value) = parse_value(value.trim()) {
+            out.push((name, value));
+        }
+    }
+    out
+}
+
+fn strip_comments(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    let mut in_string = false;
+    while let Some(c) = chars.next() {
+        if in_string {
+            out.push(c);
+            if c == '\\' {
+                if let Some(n) = chars.next() {
+                    out.push(n);
+                }
+            } else if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match (c, chars.peek()) {
+            ('"', _) => {
+                in_string = true;
+                out.push(c);
+            }
+            ('/', Some('/')) | ('#', _) => {
+                for n in chars.by_ref() {
+                    if n == '\n' {
+                        out.push('\n');
+                        break;
+                    }
+                }
+            }
+            ('/', Some('*')) => {
+                chars.next();
+                let mut prev = ' ';
+                for n in chars.by_ref() {
+                    if prev == '*' && n == '/' {
+                        break;
+                    }
+                    prev = n;
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// `"имя", значение` → (имя, значение).
+fn split_args(args: &str) -> Option<(String, &str)> {
+    let args = args.trim();
+    let (name, after) = parse_string(args)?;
+    let value = after.trim_start().strip_prefix(',')?;
+    Some((name, value))
+}
+
+fn parse_string(s: &str) -> Option<(String, &str)> {
+    let s = s.strip_prefix('"')?;
+    let mut out = String::new();
+    let mut chars = s.char_indices();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '\\' => {
+                let (_, n) = chars.next()?;
+                out.push(match n {
+                    'n' => '\n',
+                    't' => '\t',
+                    other => other,
+                });
+            }
+            '"' => return Some((out, &s[i + 1..])),
+            c => out.push(c),
+        }
+    }
+    None
+}
+
+fn parse_value(v: &str) -> Option<PrefValue> {
+    match v {
+        "true" => Some(PrefValue::Bool(true)),
+        "false" => Some(PrefValue::Bool(false)),
+        _ if v.starts_with('"') => parse_string(v).map(|(s, _)| PrefValue::String(s)),
+        _ => v.parse().ok().map(PrefValue::Int),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_firefox_prefs_js() {
+        let prefs_js = r#"// Mozilla User Preferences
+/* Do not edit this file. */
+user_pref("browser.startup.page", 3);
+user_pref("browser.startup.homepage", "https://servo.org/;https://e.com/\"q\"");
+user_pref("browser.sessionstore.resume_from_crash", false);
+user_pref("app.update.lastUpdateTime.background", -1700000000); // trailing
+"#;
+        let user_js = "# comment\nuser_pref(\"browser.startup.page\", 1);\n";
+        let p = UserPrefs::parse_files(&[prefs_js]);
+        assert_eq!(p.startup_page(), 3);
+        assert!(!p.resume_from_crash());
+        assert_eq!(
+            p.get("browser.startup.homepage"),
+            Some(&PrefValue::String(
+                "https://servo.org/;https://e.com/\"q\"".into()
+            ))
+        );
+        assert_eq!(
+            p.int("app.update.lastUpdateTime.background", 0),
+            -1700000000
+        );
+        assert_eq!(
+            UserPrefs::parse_files(&[prefs_js, user_js]).startup_page(),
+            1
+        );
+        assert_eq!(UserPrefs::default().startup_page(), 1);
+        assert!(UserPrefs::default().resume_from_crash());
+    }
+}

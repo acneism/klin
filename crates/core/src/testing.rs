@@ -37,11 +37,9 @@ impl FakeEngine {
 }
 
 impl Engine for FakeEngine {
-    fn open_tab(&mut self, window: WindowId, url: &Url, private: bool) -> TabId {
-        let tab = TabId::next();
+    fn open_tab(&mut self, tab: TabId, window: WindowId, url: &Url, private: bool) {
         self.calls
             .push(Call::OpenTab(tab, window, url.clone(), private));
-        tab
     }
     fn close_tab(&mut self, tab: TabId) {
         self.visible.remove(&tab);

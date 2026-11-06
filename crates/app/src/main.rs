@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use klin_core::input::{Key, Modifiers, MouseButton, NamedKey};
+use klin_core::prefs::UserPrefs;
 use klin_core::{
     Browser, Command, InputEvent, KeyChord, VisitKind, browser::UiEffect, command,
     default_shortcuts,
@@ -19,15 +20,19 @@ use klin_downloads::{DownloadRequest, DownloadService, default_download_dir};
 use klin_engine::{EngineConfig, ServoEngine, Waker};
 use klin_profile::{Profile, ProfileError};
 use klin_shared::download::DownloadEvent;
+use klin_shared::session::Session;
 use klin_shared::{Url, WindowId};
 use klin_storage::ContentPrefs;
 use klin_storage::PlacesService;
 use klin_storage::content_prefs::FULL_ZOOM;
 use klin_storage::places_service::Transition;
+use klin_storage::sessionstore::{self, SessionPaths, SessionWriter, StartupSession};
 use klin_ui::{Action, BrowserUi};
 use log::{info, warn};
+use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
+use winit::event_loop::ControlFlow;
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::keyboard::{self, KeyCode, ModifiersState, PhysicalKey};
 use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
@@ -38,6 +43,9 @@ const APP_NAME: &str = "Klin";
 const SUGGESTIONS_LIMIT: u32 = 10;
 /// Сколько последних посещений загружает боковая панель истории.
 const HISTORY_SIDEBAR_LIMIT: usize = 500;
+/// `browser.sessionstore.interval`
+const SESSION_INTERVAL: Duration =
+    Duration::from_millis(klin_core::prefs::SESSIONSTORE_INTERVAL_MS);
 
 #[derive(Debug)]
 struct Wake;
@@ -65,6 +73,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     let start_url = args.url.and_then(|arg| {
         klin_core::urifixup::to_url(&arg, &klin_core::urifixup::SearchEngine::default())
     });
+    // Настройки и файл сессии читаются до появления окна (поток интерфейса ещё не работает).
+    let prefs = read_user_prefs(&profile.dir);
+    let session_paths = SessionPaths::new(&profile.dir);
+    let startup = sessionstore::startup_session(
+        &session_paths,
+        prefs.startup_page(),
+        prefs.resume_from_crash(),
+    );
+    if let StartupSession::Restore {
+        after_crash: true, ..
+    } = &startup
+    {
+        info!("restoring the session after a crash");
+    }
 
     let event_loop = EventLoop::<Wake>::with_user_event().build()?;
     let proxy = event_loop.create_proxy();
@@ -72,6 +94,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         proxy,
         start_url,
         profile: Some(profile),
+        startup: Some(Box::new((startup, session_paths))),
     };
     event_loop.run_app(&mut app)?;
     Ok(())
@@ -109,6 +132,7 @@ enum App {
         proxy: EventLoopProxy<Wake>,
         start_url: Option<Url>,
         profile: Option<Profile>,
+        startup: Option<Box<(StartupSession, SessionPaths)>>,
     },
     Running(Box<Running>),
     Failed,
@@ -166,6 +190,13 @@ struct Running {
     // Порядок важен: движок (и GL-контексты окон) отпускается раньше окон ОС.
     engine: ServoEngine,
     windows: Vec<BrowserWindow>,
+    session_writer: Option<SessionWriter>,
+    /// Последний непустой снимок: он записывается при выходе, даже если последнее окно
+    /// уже закрыто в ядре.
+    last_session: Session,
+    saved_session: Session,
+    next_session_save: Instant,
+    focused: Option<WindowId>,
     /// Последним: блокировка профиля снимается, когда всё остальное уже закрыто.
     _profile: Profile,
 }
@@ -176,14 +207,21 @@ impl ApplicationHandler<Wake> for App {
             proxy,
             start_url,
             profile,
+            startup,
         } = self
         else {
             return;
         };
-        let Some(profile) = profile.take() else {
+        let (Some(profile), Some(startup)) = (profile.take(), startup.take()) else {
             return;
         };
-        match Running::start(event_loop, proxy.clone(), start_url.take(), profile) {
+        match Running::start(
+            event_loop,
+            proxy.clone(),
+            start_url.take(),
+            profile,
+            *startup,
+        ) {
             Ok(running) => *self = App::Running(Box::new(running)),
             Err(error) => {
                 log::error!("failed to start: {error}");
@@ -217,6 +255,25 @@ impl ApplicationHandler<Wake> for App {
             app.spin(event_loop);
         }
     }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if let App::Running(app) = self {
+            app.tick_session(event_loop);
+        }
+    }
+
+    fn exiting(&mut self, _: &ActiveEventLoop) {
+        if let App::Running(app) = self {
+            app.finish_session();
+        }
+    }
+}
+
+/// `prefs.js` и `user.js` профиля (как в Firefox, `user.js` перекрывает `prefs.js`).
+fn read_user_prefs(dir: &std::path::Path) -> UserPrefs {
+    let read = |name: &str| std::fs::read_to_string(dir.join(name)).unwrap_or_default();
+    let (prefs_js, user_js) = (read("prefs.js"), read("user.js"));
+    UserPrefs::parse_files(&[&prefs_js, &user_js])
 }
 
 impl Running {
@@ -225,6 +282,7 @@ impl Running {
         proxy: EventLoopProxy<Wake>,
         start_url: Option<Url>,
         profile: Profile,
+        (startup, session_paths): (StartupSession, SessionPaths),
     ) -> Result<Self, Box<dyn Error>> {
         let waker = {
             let proxy = proxy.clone();
@@ -285,9 +343,30 @@ impl Running {
             shortcuts: default_shortcuts(),
             engine,
             windows: Vec::new(),
+            session_writer: Some(SessionWriter::start(session_paths)),
+            last_session: Session::default(),
+            saved_session: Session::default(),
+            next_session_save: Instant::now() + SESSION_INTERVAL,
+            focused: None,
             _profile: profile,
         };
-        running.open_window(event_loop, false, start_url)?;
+        match startup {
+            StartupSession::Restore { session, .. } => {
+                for state in &session.windows {
+                    running.restore_window(event_loop, state)?;
+                }
+                // Адрес из командной строки открывается в новой вкладке, как в Firefox.
+                if let (Some(url), Some(first)) = (start_url, running.windows.first().map(|w| w.id))
+                {
+                    running
+                        .browser
+                        .open_tab(&mut running.engine, first, url, None, true);
+                }
+            }
+            StartupSession::Fresh => {
+                running.open_window(event_loop, false, start_url)?;
+            }
+        }
         Ok(running)
     }
 
@@ -297,6 +376,31 @@ impl Running {
         event_loop: &ActiveEventLoop,
         private: bool,
         url: Option<Url>,
+    ) -> Result<WindowId, Box<dyn Error>> {
+        let id = self.create_os_window(event_loop, private, url.is_none())?;
+        self.browser.open_window(&mut self.engine, id, private, url);
+        self.update_titles();
+        Ok(id)
+    }
+
+    /// Окно из сохранённой сессии.
+    fn restore_window(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        state: &klin_shared::session::WindowState,
+    ) -> Result<WindowId, Box<dyn Error>> {
+        let id = self.create_os_window(event_loop, false, false)?;
+        self.browser.restore_window(&mut self.engine, id, state);
+        self.update_titles();
+        Ok(id)
+    }
+
+    /// Окно ОС, его поверхность в движке и интерфейс; вкладок в нём ещё нет.
+    fn create_os_window(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        private: bool,
+        focus_url_bar: bool,
     ) -> Result<WindowId, Box<dyn Error>> {
         let window = event_loop.create_window(WindowAttributes::default().with_title(APP_NAME))?;
         let id = WindowId::next();
@@ -324,7 +428,7 @@ impl Running {
             Some(painter.max_texture_side()),
         );
         let mut ui = BrowserUi::new();
-        if url.is_none() {
+        if focus_url_bar {
             // Новое окно с пустой вкладкой: курсор сразу в адресной строке, как в Firefox.
             ui.focus_url_bar();
         }
@@ -342,8 +446,6 @@ impl Running {
             title: String::new(),
             window,
         });
-        self.browser.open_window(&mut self.engine, id, private, url);
-        self.update_titles();
         Ok(id)
     }
 
@@ -700,6 +802,33 @@ impl Running {
         }
     }
 
+    /// Снимок сессии после каждой пачки событий; запись — не чаще раза в
+    /// `browser.sessionstore.interval` и только если что-то изменилось.
+    fn tick_session(&mut self, event_loop: &ActiveEventLoop) {
+        let snapshot = self.browser.session_snapshot(self.focused);
+        if !snapshot.windows.is_empty() {
+            self.last_session = snapshot;
+        }
+        let now = Instant::now();
+        if now >= self.next_session_save {
+            if self.last_session != self.saved_session
+                && let Some(writer) = &self.session_writer
+            {
+                writer.save(self.last_session.clone());
+                self.saved_session = self.last_session.clone();
+            }
+            self.next_session_save = now + SESSION_INTERVAL;
+        }
+        event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_session_save));
+    }
+
+    /// Обычный выход: записать сессию как завершённую.
+    fn finish_session(&mut self) {
+        if let Some(writer) = self.session_writer.take() {
+            writer.finish(self.last_session.clone());
+        }
+    }
+
     fn remove_bookmark(&mut self, url: Url) {
         self.places.remove_bookmarks(url.clone());
         self.browser.set_bookmarked(&url, false);
@@ -770,6 +899,9 @@ impl Running {
         if matches!(event, WindowEvent::RedrawRequested) {
             self.redraw(event_loop, id);
             return;
+        }
+        if let WindowEvent::Focused(true) = event {
+            self.focused = Some(id);
         }
         let Some(w) = self.win_mut(id) else { return };
         let egui_response = w.egui_state.on_window_event(&w.window, &event);

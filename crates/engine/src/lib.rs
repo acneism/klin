@@ -293,7 +293,7 @@ impl ServoEngine {
 }
 
 impl Engine for ServoEngine {
-    fn open_tab(&mut self, window: WindowId, url: &Url, private: bool) -> TabId {
+    fn open_tab(&mut self, tab: TabId, window: WindowId, url: &Url, private: bool) {
         if private {
             // Отдельного контекста хранилища в API Servo пока не нашли — проверить до 0.2.
             warn!("private browsing is not isolated yet");
@@ -301,7 +301,7 @@ impl Engine for ServoEngine {
         let Some(surface) = self.surface(window) else {
             // Ядро открывает вкладки только в окнах, для которых вызван add_window.
             log::error!("open_tab: no surface for {window}");
-            return TabId::next();
+            return;
         };
         let rc: Rc<dyn RenderingContext> = surface.page_context.clone();
         let webview = WebViewBuilder::new(&self.servo, rc)
@@ -309,7 +309,7 @@ impl Engine for ServoEngine {
             .hidpi_scale_factor(Scale::new(surface.scale.get()))
             .delegate(self.delegate.clone())
             .build();
-        self.shared.register(webview, window)
+        self.shared.register(webview, window, tab);
     }
 
     fn close_tab(&mut self, tab: TabId) {

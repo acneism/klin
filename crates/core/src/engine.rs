@@ -7,7 +7,9 @@ use crate::input::InputEvent;
 /// Всё, что ядро знает о движке. Реализации: `klin_engine::ServoEngine`
 /// и [`crate::testing::FakeEngine`] для тестов без Servo.
 pub trait Engine {
-    fn open_tab(&mut self, window: WindowId, url: &Url, private: bool) -> TabId;
+    /// Создать вкладку `tab` (идентификатор выдаёт ядро: у восстановленной вкладки он есть
+    /// раньше, чем её страница загружена).
+    fn open_tab(&mut self, tab: TabId, window: WindowId, url: &Url, private: bool);
     fn close_tab(&mut self, tab: TabId);
     fn load(&mut self, tab: TabId, url: &Url);
     fn go_back(&mut self, tab: TabId);
@@ -45,10 +47,11 @@ pub enum EngineEvent {
         tab: TabId,
         text: Option<String>,
     },
+    /// История переходов вкладки: адреса и текущая позиция (с нуля).
     HistoryChanged {
         tab: TabId,
-        can_back: bool,
-        can_forward: bool,
+        entries: Vec<Url>,
+        index: usize,
     },
     /// Страница открыла вкладку (window.open, target=_blank). Если движок уже создал
     /// WebView сам (так делает Servo, чтобы сохранить связь с opener), `created` — её TabId,
