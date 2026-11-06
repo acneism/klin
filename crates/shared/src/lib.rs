@@ -34,6 +34,7 @@ id_type!(RequestId, "request#");
 id_type!(DownloadId, "download#");
 
 pub mod download;
+pub mod import;
 pub mod session;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]

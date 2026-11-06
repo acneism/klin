@@ -76,6 +76,7 @@ pub struct BrowserUi {
     history: Vec<HistoryItem>,
     history_filter: String,
     find_bars: findbar::FindBars,
+    notice: Option<String>,
 }
 
 fn url_bar_id() -> egui::Id {
@@ -99,6 +100,10 @@ impl BrowserUi {
             self.suggestions_query = query.to_owned();
             self.suggestion_selected = None;
         }
+    }
+
+    pub fn set_notice(&mut self, text: String) {
+        self.notice = Some(text);
     }
 
     pub fn show_find_bar(&mut self, tab: TabId) {
@@ -153,6 +158,20 @@ impl BrowserUi {
             self.nav_bar(ui, selected, browser.downloads(), &mut actions);
         });
 
+        if let Some(text) = self.notice.clone() {
+            egui::Panel::top("klin-notice").show(root, |ui| {
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    ui.label(text);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if icons::button(ui, true, Icon::Close, 22.0).clicked() {
+                            self.notice = None;
+                        }
+                    });
+                });
+                ui.add_space(2.0);
+            });
+        }
         if browser.window(window).is_some_and(|w| w.private) {
             egui::Panel::top("klin-private-notice").show(root, |ui| {
                 ui.add_space(2.0);

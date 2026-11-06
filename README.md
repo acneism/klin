@@ -16,7 +16,8 @@ shortcuts, data formats, settings.
 > frecency, Ctrl+D with a star button, Ctrl+H history sidebar. The session is saved in
 > Firefox's `sessionstore.jsonlz4` format and restored after a crash, or after a normal exit with
 > `browser.startup.page = 3` in `prefs.js`/`user.js`. Find in page (Ctrl+F, F3) works through
-> the selection API. Not ready for everyday use.
+> the selection API. `klin -migration` imports history, bookmarks and cookies from the default
+> Firefox profile. Not ready for everyday use.
 
 The specification and architecture are in [docs/spec.md](docs/spec.md) (in Russian).
 
@@ -54,7 +55,8 @@ monthly breaking changes in Servo's API are fixed in one place.
 | `storage` | `content-prefs.sqlite` (per-site zoom); `places.sqlite` history and bookmarks, ported from application-services | history, bookmarks, suggestions |
 | `downloads` | download service: background HTTP download with the engine's cookies, Firefox-style file names | done for 0.1 |
 | `platform-win` | open a file, show it in Explorer | started |
-| `sync`, `remote-settings`, `content-blocking`, `extensions`, `importer` | services and Windows integration | stubs, scheduled per the version plan |
+| `importer` | reads history, bookmarks and cookies from a Firefox profile | done for 0.2 |
+| `sync`, `remote-settings`, `content-blocking`, `extensions` | services and Windows integration | stubs, scheduled per the version plan |
 
 ## License
 

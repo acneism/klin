@@ -14,11 +14,13 @@ use klin_downloads::{DownloadRequest, DownloadService, default_download_dir};
 use klin_engine::{EngineConfig, ServoEngine, Waker};
 use klin_profile::{Profile, ProfileError};
 use klin_shared::download::DownloadEvent;
+use klin_shared::import::ImportedData;
 use klin_shared::session::Session;
 use klin_shared::{Url, WindowId};
 use klin_storage::ContentPrefs;
 use klin_storage::PlacesService;
 use klin_storage::content_prefs::FULL_ZOOM;
+use klin_storage::places_service::ImportStats;
 use klin_storage::places_service::Transition;
 use klin_storage::sessionstore::{self, SessionPaths, SessionWriter, StartupSession};
 use klin_ui::{Action, BrowserUi};
@@ -87,6 +89,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         start_url,
         profile: Some(profile),
         startup: Some(Box::new((startup, session_paths))),
+        migration: args.migration,
     };
     event_loop.run_app(&mut app)?;
     Ok(())
@@ -96,6 +99,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 struct Args {
     profile: Option<std::path::PathBuf>,
     url: Option<String>,
+    migration: bool,
 }
 
 impl Args {
@@ -105,6 +109,7 @@ impl Args {
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "-profile" | "--profile" => out.profile = args.next().map(Into::into),
+                "-migration" | "--migration" => out.migration = true,
                 flag if flag.starts_with('-') && flag.len() > 1 => {
                     warn!("unknown argument {flag}");
                 }
@@ -122,6 +127,7 @@ enum App {
         start_url: Option<Url>,
         profile: Option<Profile>,
         startup: Option<Box<(StartupSession, SessionPaths)>>,
+        migration: bool,
     },
     Running(Box<Running>),
     Failed,
@@ -170,6 +176,10 @@ struct Running {
     bookmark_tx: Sender<(Url, bool)>,
     history_rx: Receiver<(WindowId, Vec<klin_ui::HistoryItem>)>,
     history_tx: Sender<(WindowId, Vec<klin_ui::HistoryItem>)>,
+    import_rx: Receiver<Result<ImportedData, String>>,
+    import_tx: Sender<Result<ImportedData, String>>,
+    import_done_rx: Receiver<(ImportStats, usize)>,
+    import_done_tx: Sender<(ImportStats, usize)>,
     browser: Browser,
     shortcuts: Vec<(KeyChord, Command)>,
     engine: ServoEngine,
@@ -189,6 +199,7 @@ impl ApplicationHandler<Wake> for App {
             start_url,
             profile,
             startup,
+            migration,
         } = self
         else {
             return;
@@ -203,7 +214,12 @@ impl ApplicationHandler<Wake> for App {
             profile,
             *startup,
         ) {
-            Ok(running) => *self = App::Running(Box::new(running)),
+            Ok(running) => {
+                if *migration {
+                    running.start_firefox_import();
+                }
+                *self = App::Running(Box::new(running));
+            }
             Err(error) => {
                 log::error!("failed to start: {error}");
                 *self = App::Failed;
@@ -248,6 +264,15 @@ impl ApplicationHandler<Wake> for App {
             app.finish_session();
         }
     }
+}
+
+fn plural(n: usize, one: &str, few: &str, many: &str) -> String {
+    let word = match (n % 10, n % 100) {
+        (1, r) if r != 11 => one,
+        (2..=4, r) if !(12..=14).contains(&r) => few,
+        _ => many,
+    };
+    format!("{n} {word}")
 }
 
 fn read_user_prefs(dir: &std::path::Path) -> UserPrefs {
@@ -300,6 +325,8 @@ impl Running {
         let (suggestions_tx, suggestions_rx) = channel();
         let (bookmark_tx, bookmark_rx) = channel();
         let (history_tx, history_rx) = channel();
+        let (import_tx, import_rx) = channel();
+        let (import_done_tx, import_done_rx) = channel();
         let mut running = Self {
             proxy,
             picked_tx,
@@ -317,6 +344,10 @@ impl Running {
             bookmark_tx,
             history_rx,
             history_tx,
+            import_rx,
+            import_tx,
+            import_done_rx,
+            import_done_tx,
             browser: Browser::new(),
             shortcuts: default_shortcuts(),
             engine,
@@ -480,6 +511,30 @@ impl Running {
                 w.ui.set_history(items);
                 w.window.request_redraw();
             }
+        }
+        while let Ok(result) = self.import_rx.try_recv() {
+            match result {
+                Ok(data) => {
+                    let cookies = self.engine.import_cookies(data.cookies);
+                    let tx = self.import_done_tx.clone();
+                    let proxy = self.proxy.clone();
+                    self.places
+                        .import(data.places, data.bookmarks, move |stats| {
+                            let _ = tx.send((stats, cookies));
+                            let _ = proxy.send_event(Wake);
+                        });
+                }
+                Err(error) => self.notify_all(format!("Импорт из Firefox не удался: {error}")),
+            }
+        }
+        while let Ok((stats, cookies)) = self.import_done_rx.try_recv() {
+            self.notify_all(format!(
+                "Импортировано из Firefox: {} истории ({}), {}, {}.",
+                plural(stats.pages, "страница", "страницы", "страниц"),
+                plural(stats.visits, "посещение", "посещения", "посещений"),
+                plural(stats.bookmarks, "закладка", "закладки", "закладок"),
+                plural(cookies, "cookie", "cookies", "cookies"),
+            ));
         }
         while let Ok(request) = self.download_start_rx.try_recv() {
             self.downloads.start(request);
@@ -815,6 +870,30 @@ impl Running {
         }
     }
 
+    fn start_firefox_import(&self) {
+        let tx = self.import_tx.clone();
+        let proxy = self.proxy.clone();
+        let temp = std::env::temp_dir().join(format!("klin-firefox-import-{}", std::process::id()));
+        std::thread::spawn(move || {
+            let result = klin_importer::firefox_base_dir()
+                .and_then(|base| klin_importer::default_profile(&base))
+                .ok_or_else(|| klin_importer::ImportError::NoProfile.to_string())
+                .and_then(|dir| {
+                    info!("importing Firefox profile {}", dir.display());
+                    klin_importer::import_profile(&dir, &temp).map_err(|e| e.to_string())
+                });
+            let _ = tx.send(result);
+            let _ = proxy.send_event(Wake);
+        });
+    }
+
+    fn notify_all(&mut self, text: String) {
+        for w in &mut self.windows {
+            w.ui.set_notice(text.clone());
+            w.window.request_redraw();
+        }
+    }
+
     fn remove_bookmark(&mut self, url: Url) {
         self.places.remove_bookmarks(url.clone());
         self.browser.set_bookmarked(&url, false);
@@ -1086,12 +1165,27 @@ mod tests {
     }
 
     #[test]
+    fn russian_plurals() {
+        assert_eq!(plural(1, "закладка", "закладки", "закладок"), "1 закладка");
+        assert_eq!(plural(3, "закладка", "закладки", "закладок"), "3 закладки");
+        assert_eq!(
+            plural(12, "закладка", "закладки", "закладок"),
+            "12 закладок"
+        );
+        assert_eq!(
+            plural(21, "закладка", "закладки", "закладок"),
+            "21 закладка"
+        );
+    }
+
+    #[test]
     fn firefox_style_arguments() {
         assert_eq!(
             parse(&["-profile", "C:/p", "example.com"]),
             Args {
                 profile: Some("C:/p".into()),
-                url: Some("example.com".into())
+                url: Some("example.com".into()),
+                migration: false,
             }
         );
         assert_eq!(parse(&["--profile", "x"]).profile, Some("x".into()));

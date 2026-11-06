@@ -3259,6 +3259,7 @@ dependencies = [
  "klin-core",
  "klin-downloads",
  "klin-engine",
+ "klin-importer",
  "klin-platform-win",
  "klin-profile",
  "klin-shared",
@@ -3302,6 +3303,7 @@ dependencies = [
 name = "klin-engine"
 version = "0.0.1"
 dependencies = [
+ "cookie 0.18.2",
  "dpi",
  "euclid",
  "glow",
@@ -3333,6 +3335,10 @@ version = "0.0.1"
 dependencies = [
  "klin-profile",
  "klin-shared",
+ "log",
+ "rusqlite",
+ "thiserror 2.0.21",
+ "url",
 ]
 
 [[package]]

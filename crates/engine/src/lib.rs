@@ -155,6 +155,52 @@ impl ServoEngine {
         self.shared.visible.borrow_mut().remove(&window);
     }
 
+    pub fn import_cookies(&self, cookies: Vec<klin_shared::import::ImportedCookie>) -> usize {
+        use klin_shared::import::SameSite;
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as u64);
+        let mut imported = 0;
+        for c in cookies {
+            let host = c.host.trim_start_matches('.');
+            let scheme = if c.secure { "https" } else { "http" };
+            let path = if c.path.starts_with('/') {
+                c.path.clone()
+            } else {
+                format!("/{}", c.path)
+            };
+            let Ok(url) = Url::parse(&format!("{scheme}://{host}{path}")) else {
+                continue;
+            };
+            let mut builder = cookie::Cookie::build((c.name, c.value))
+                .path(path)
+                .secure(c.secure)
+                .http_only(c.http_only)
+                .same_site(match c.same_site {
+                    SameSite::None => cookie::SameSite::None,
+                    SameSite::Lax => cookie::SameSite::Lax,
+                    SameSite::Strict => cookie::SameSite::Strict,
+                });
+            if c.host.starts_with('.') {
+                builder = builder.domain(host.to_owned());
+            }
+            if let Some(expires) = c.expires_ms {
+                if expires <= now_ms {
+                    continue;
+                }
+                let seconds = ((expires - now_ms) / 1000) as i64;
+                builder = builder.max_age(cookie::time::Duration::seconds(seconds));
+            }
+            self.servo.site_data_manager().set_cookie_for_url(
+                url,
+                builder.build(),
+                Some(Box::new(|| {})),
+            );
+            imported += 1;
+        }
+        imported
+    }
+
     pub fn user_agent(&self) -> String {
         servo::pref!(user_agent)
     }

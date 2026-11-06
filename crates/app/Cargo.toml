@@ -16,6 +16,7 @@ klin-ui.workspace = true
 klin-profile.workspace = true
 klin-storage.workspace = true
 klin-downloads.workspace = true
+klin-importer.workspace = true
 klin-platform-win.workspace = true
 winit.workspace = true
 url.workspace = true

@@ -2,11 +2,13 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::JoinHandle;
 
+use klin_shared::import::{BookmarkRoot, ImportedBookmark, ImportedPlace, ImportedRoot};
 use url::Url;
 
 use crate::places::api::matcher::{self, SearchParams};
 use crate::places::storage::bookmarks::{
-    self, BookmarkPosition, BookmarkRootGuid, InsertableBookmark, InsertableItem, fetch,
+    self, BookmarkPosition, BookmarkRootGuid, InsertableBookmark, InsertableFolder, InsertableItem,
+    InsertableSeparator, fetch,
 };
 use crate::places::storage::history;
 use crate::places::types::{VisitTransitionSet, VisitType};
@@ -36,7 +38,19 @@ pub enum Transition {
 
 type Callback<T> = Box<dyn FnOnce(T) + Send>;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ImportStats {
+    pub pages: usize,
+    pub visits: usize,
+    pub bookmarks: usize,
+}
+
 enum Message {
+    Import {
+        places: Vec<ImportedPlace>,
+        bookmarks: Vec<ImportedRoot>,
+        reply: Callback<ImportStats>,
+    },
     Visit {
         url: Url,
         transition: Transition,
@@ -143,6 +157,19 @@ impl PlacesService {
         self.send(Message::RemoveBookmarks { url });
     }
 
+    pub fn import(
+        &self,
+        places: Vec<ImportedPlace>,
+        bookmarks: Vec<ImportedRoot>,
+        reply: impl FnOnce(ImportStats) + Send + 'static,
+    ) {
+        self.send(Message::Import {
+            places,
+            bookmarks,
+            reply: Box::new(reply),
+        });
+    }
+
     pub fn recent_history(
         &self,
         limit: usize,
@@ -176,6 +203,7 @@ fn run(path: PathBuf, rx: Receiver<Message>) {
                     Message::Search { reply, .. } => reply(Vec::new()),
                     Message::IsBookmarked { reply, .. } => reply(false),
                     Message::RecentHistory { reply, .. } => reply(Vec::new()),
+                    Message::Import { reply, .. } => reply(ImportStats::default()),
                     _ => {}
                 }
             }
@@ -258,6 +286,25 @@ fn handle(db: &mut PlacesDb, message: Message) -> crate::places::Result<()> {
                 bookmarks::delete_bookmark(db, &bookmark.guid)?;
             }
         }
+        Message::Import {
+            places,
+            bookmarks,
+            reply,
+        } => {
+            let mut stats = ImportStats::default();
+            import_history(db, places, &mut stats)?;
+            for root in bookmarks {
+                let parent = match root.root {
+                    BookmarkRoot::Menu => BookmarkRootGuid::Menu,
+                    BookmarkRoot::Toolbar => BookmarkRootGuid::Toolbar,
+                    BookmarkRoot::Unfiled => BookmarkRootGuid::Unfiled,
+                    BookmarkRoot::Mobile => BookmarkRootGuid::Mobile,
+                }
+                .as_guid();
+                stats.bookmarks += import_bookmarks(db, &parent, root.children)?;
+            }
+            reply(stats);
+        }
         Message::RecentHistory { limit, reply } => {
             let infos = history::get_visit_infos(
                 db,
@@ -279,6 +326,106 @@ fn handle(db: &mut PlacesDb, message: Message) -> crate::places::Result<()> {
         }
     }
     Ok(())
+}
+
+fn import_history(
+    db: &PlacesDb,
+    places: Vec<ImportedPlace>,
+    stats: &mut ImportStats,
+) -> crate::places::Result<()> {
+    const BATCH: usize = 500;
+    let mut in_batch = 0;
+    let mut tx = Some(db.begin_transaction()?);
+    for place in places {
+        stats.pages += 1;
+        for visit in place.visits {
+            let Some(visit_type) = VisitType::from_primitive(visit.visit_type) else {
+                continue;
+            };
+            let observation = VisitObservation::new(place.url.clone())
+                .with_visit_type(visit_type)
+                .with_at(Timestamp(visit.at_ms))
+                .with_title(place.title.clone());
+            history::apply_observation_direct(db, observation)?;
+            stats.visits += 1;
+            in_batch += 1;
+            if in_batch >= BATCH {
+                if let Some(t) = tx.take() {
+                    t.commit()?;
+                }
+                tx = Some(db.begin_transaction()?);
+                in_batch = 0;
+            }
+        }
+    }
+    if let Some(t) = tx.take() {
+        t.commit()?;
+    }
+    Ok(())
+}
+
+fn import_bookmarks(
+    db: &PlacesDb,
+    parent: &crate::support::guid::Guid,
+    items: Vec<ImportedBookmark>,
+) -> crate::places::Result<usize> {
+    let mut inserted = 0;
+    for item in items {
+        match item {
+            ImportedBookmark::Bookmark {
+                url,
+                title,
+                added_ms,
+            } => {
+                if !fetch::fetch_bookmarks_by_url(db, &url)?.is_empty() {
+                    continue;
+                }
+                let bookmark = InsertableBookmark {
+                    parent_guid: parent.clone(),
+                    position: BookmarkPosition::Append,
+                    date_added: Some(Timestamp(added_ms)),
+                    last_modified: None,
+                    guid: None,
+                    url,
+                    title,
+                };
+                bookmarks::insert_bookmark(db, InsertableItem::from(bookmark))?;
+                inserted += 1;
+            }
+            ImportedBookmark::Folder {
+                title,
+                added_ms,
+                children,
+            } => {
+                let folder = InsertableFolder {
+                    parent_guid: parent.clone(),
+                    position: BookmarkPosition::Append,
+                    date_added: Some(Timestamp(added_ms)),
+                    last_modified: None,
+                    guid: None,
+                    title: Some(title),
+                    children: Vec::new(),
+                };
+                let guid = bookmarks::insert_bookmark(db, InsertableItem::from(folder))?;
+                let count = import_bookmarks(db, &guid, children)?;
+                if count == 0 {
+                    bookmarks::delete_bookmark(db, &guid)?;
+                }
+                inserted += count;
+            }
+            ImportedBookmark::Separator => {
+                let separator = InsertableSeparator {
+                    parent_guid: parent.clone(),
+                    position: BookmarkPosition::Append,
+                    date_added: None,
+                    last_modified: None,
+                    guid: None,
+                };
+                bookmarks::insert_bookmark(db, InsertableItem::from(separator))?;
+            }
+        }
+    }
+    Ok(inserted)
 }
 
 #[cfg(test)]
@@ -338,5 +485,72 @@ mod tests {
             recent[1].title.as_deref(),
             Some("Servo, the embeddable web engine")
         );
+    }
+
+    #[test]
+    fn import_from_firefox_data() {
+        use klin_shared::import::{ImportedBookmark as B, ImportedVisit};
+        let places = PlacesService::start(temp_db("import"));
+        let url = |s: &str| Url::parse(s).unwrap();
+        let history = vec![ImportedPlace {
+            url: url("https://www.mozilla.org/"),
+            title: Some("Mozilla".into()),
+            visits: vec![
+                ImportedVisit {
+                    at_ms: 1_700_000_000_000,
+                    visit_type: 2,
+                },
+                ImportedVisit {
+                    at_ms: 1_700_000_100_000,
+                    visit_type: 1,
+                },
+            ],
+        }];
+        let roots = || {
+            vec![ImportedRoot {
+                root: BookmarkRoot::Toolbar,
+                children: vec![
+                    B::Bookmark {
+                        url: url("https://servo.org/"),
+                        title: Some("Servo".into()),
+                        added_ms: 1,
+                    },
+                    B::Folder {
+                        title: "Rust".into(),
+                        added_ms: 1,
+                        children: vec![B::Bookmark {
+                            url: url("https://www.rust-lang.org/"),
+                            title: Some("Rust".into()),
+                            added_ms: 1,
+                        }],
+                    },
+                ],
+            }]
+        };
+        let stats = wait(|r| places.import(history.clone(), roots(), r));
+        assert_eq!(
+            stats,
+            ImportStats {
+                pages: 1,
+                visits: 2,
+                bookmarks: 2
+            }
+        );
+        let found = wait(|r| places.search("mozilla".into(), 10, r));
+        assert!(
+            found
+                .iter()
+                .any(|s| s.url.host_str() == Some("www.mozilla.org")),
+            "{found:?}"
+        );
+        let recent = wait(|r| places.recent_history(10, r));
+        assert_eq!(recent.len(), 2);
+        assert_eq!(recent[0].visited_ms, 1_700_000_100_000);
+        assert_eq!(recent[0].title.as_deref(), Some("Mozilla"));
+        assert!(wait(
+            |r| places.is_bookmarked(url("https://www.rust-lang.org/"), r)
+        ));
+        let again = wait(|r| places.import(Vec::new(), roots(), r));
+        assert_eq!(again.bookmarks, 0);
     }
 }

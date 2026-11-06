@@ -51,7 +51,7 @@ Nov 6, 2026 · @Dias
 | 0.2 | Приватное окно | Ctrl+Shift+P, отдельные cookies и кэш | проверено: в Servo 0.7.0 верхнеуровневая WebView всегда создаётся с `is_private = false`, API нет — нужен патч в Servo (пишет человек); пока окно не пишет историю и сессию и честно предупреждает плашкой, что cookies общие |
 | 0.2 | Поиск на странице | Ctrl+F, F3, подсветка всех совпадений | в API WebView поиска нет — сделано через `evaluate_javascript` и Selection; отступление: «Подсветить все» недоступна (в Servo нет CSS Custom Highlight API, а `Range.getClientRects` неверен) |
 | 0.2 | Настройки | разделы about:preferences и about:config | проброс настроек в `Preferences` Servo |
-| 0.2 | Импорт из Firefox: закладки, история, cookies | мастер импорта данных Firefox | запись cookies в хранилище движка — проверить |
+| 0.2 | Импорт из Firefox: закладки, история, cookies | мастер импорта данных Firefox | проверено: cookies пишутся через `SiteDataManager::set_cookie_for_url`; импорт запускается флагом `-migration` (как в Firefox), мастер с выбором данных — вместе с настройками |
 | 0.3 | Пароли: сохранение, автозаполнение, менеджер | about:logins, импорт паролей из профиля Firefox | отправка форм и заполнение полей — через `UserContentManager` и `evaluate_javascript` или патч |
 | 0.3 | Аккаунт Mozilla и Firefox Sync: закладки, история, пароли, открытые вкладки | меню «Войти в аккаунт», «Вкладки с других устройств» | страница входа в аккаунт должна работать в Servo |
 | 0.3 | Режим чтения | Reader View: Ctrl+Alt+R, F9 | есть: `evaluate_javascript`, `UserContentManager` |

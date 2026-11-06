@@ -1,6 +1,6 @@
 [package]
 name = "klin-importer"
-description = "Импорт профиля Firefox"
+description = "Импорт профиля Firefox: история, закладки, cookies"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,6 +10,10 @@ repository.workspace = true
 [dependencies]
 klin-shared.workspace = true
 klin-profile.workspace = true
+rusqlite.workspace = true
+url.workspace = true
+log.workspace = true
+thiserror.workspace = true
 
 [lints]
 workspace = true
