@@ -1,0 +1,13 @@
+[package]
+name = "klin-internal-pages"
+description = "about:-страницы Klin (HTML/CSS/JS вшиваются в бинарник)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

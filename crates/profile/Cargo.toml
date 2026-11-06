@@ -1,0 +1,14 @@
+[package]
+name = "klin-profile"
+description = "Папка профиля Klin: блокировка, миграции, ключи"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+klin-shared.workspace = true
+
+[lints]
+workspace = true

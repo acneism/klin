@@ -1,0 +1,65 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+# Everything except the Servo-dependent crates builds in seconds.
+# `cargo test` runs core logic tests without compiling the engine.
+# The full build (`cargo build --workspace`) runs nightly in CI and before merging to main.
+default-members = [
+    "crates/shared",
+    "crates/core",
+    "crates/ui",
+    "crates/internal-pages",
+    "crates/profile",
+    "crates/storage",
+    "crates/sync",
+    "crates/remote-settings",
+    "crates/content-blocking",
+    "crates/downloads",
+    "crates/extensions",
+    "crates/importer",
+    "crates/platform-win",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.88"
+license = "MPL-2.0"
+repository = "https://github.com/acneism/klin"
+authors = ["Klin contributors"]
+
+[workspace.dependencies]
+# Servo is pinned exactly: updates are a separate monthly task (docs/spec.md, «Интеграция с Servo»).
+servo = { version = "=0.7.0", default-features = true }
+
+url = "2.5"
+thiserror = "2"
+log = "0.4"
+env_logger = "0.11"
+winit = "0.30"
+euclid = "0.22"
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
+
+klin-shared = { path = "crates/shared" }
+klin-core = { path = "crates/core" }
+klin-ui = { path = "crates/ui" }
+klin-engine = { path = "crates/engine" }
+klin-internal-pages = { path = "crates/internal-pages" }
+klin-profile = { path = "crates/profile" }
+klin-storage = { path = "crates/storage" }
+klin-sync = { path = "crates/sync" }
+klin-remote-settings = { path = "crates/remote-settings" }
+klin-content-blocking = { path = "crates/content-blocking" }
+klin-downloads = { path = "crates/downloads" }
+klin-extensions = { path = "crates/extensions" }
+klin-importer = { path = "crates/importer" }
+klin-platform-win = { path = "crates/platform-win" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+debug = "line-tables-only"

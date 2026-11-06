@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Полная сборка с Servo — раз в сутки (docs/spec.md, «CI»).
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  # Каждый коммит: форматирование, clippy и юнит-тесты без сборки движка.
+  quick:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets
+      - run: cargo test
+
+  # Полная сборка с Servo: раз в сутки и перед слиянием в main.
+  full:
+    if: github.event_name != 'push'
+    runs-on: windows-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      # Servo 0.6+ требует Clang 19 или новее.
+      - name: Install LLVM
+        run: choco install llvm -y --no-progress
+      - run: clang --version
+      - run: cargo clippy --workspace --all-targets
+      - run: cargo build --workspace
+      - run: cargo test --workspace

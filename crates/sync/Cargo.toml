@@ -1,0 +1,15 @@
+[package]
+name = "klin-sync"
+description = "Аккаунт Mozilla и Firefox Sync"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+klin-shared.workspace = true
+klin-profile.workspace = true
+
+[lints]
+workspace = true

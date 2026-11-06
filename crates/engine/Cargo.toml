@@ -1,0 +1,26 @@
+[package]
+name = "klin-engine"
+description = "Адаптер движка Servo — единственный консумент крейта servo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+klin-shared.workspace = true
+klin-core.workspace = true
+klin-internal-pages.workspace = true
+klin-content-blocking.workspace = true
+servo.workspace = true
+url.workspace = true
+log.workspace = true
+euclid.workspace = true
+# Версии ниже совпадают с зависимостями servo 0.7.0: их типы проходят через API движка.
+dpi = "0.1"
+http = "1.4"
+keyboard-types = "0.8.3"
+raw-window-handle = "0.6"
+
+[lints]
+workspace = true

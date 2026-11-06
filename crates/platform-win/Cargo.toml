@@ -1,0 +1,19 @@
+[package]
+name = "klin-platform-win"
+description = "Интеграция с Win32: DPAPI, браузер по умолчанию, ярлыки, обновление"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+
+# The only crate allowed to contain `unsafe` (docs/spec.md, «Качество кода»).
+# Every unsafe block must carry a `// SAFETY:` comment.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "deny"

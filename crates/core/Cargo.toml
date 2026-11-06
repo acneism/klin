@@ -1,0 +1,16 @@
+[package]
+name = "klin-core"
+description = "Ядро Klin: модель вкладок и окон, команды, сессия, prefs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+klin-shared.workspace = true
+url.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

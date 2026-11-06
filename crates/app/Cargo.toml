@@ -1,0 +1,28 @@
+[package]
+name = "klin-app"
+default-run = "klin"
+description = "Klin — исполняемый файл браузера"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+klin-shared.workspace = true
+klin-core.workspace = true
+klin-engine.workspace = true
+klin-ui.workspace = true
+klin-profile.workspace = true
+winit.workspace = true
+url.workspace = true
+log.workspace = true
+env_logger.workspace = true
+rustls.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "klin"
+path = "src/main.rs"

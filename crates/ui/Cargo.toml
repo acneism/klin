@@ -1,0 +1,15 @@
+[package]
+name = "klin-ui"
+description = "Интерфейс Klin на egui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+klin-shared.workspace = true
+klin-core.workspace = true
+
+[lints]
+workspace = true
