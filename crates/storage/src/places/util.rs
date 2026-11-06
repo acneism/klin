@@ -54,9 +54,15 @@ mod test {
             "file:///foo%20bar/baz"
         );
 
+        #[cfg(not(windows))]
         assert_eq!(
             ensure_url_path("/foo bar/baz").unwrap().as_str(),
             "file:///foo%20bar/baz"
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            ensure_url_path("C:\\foo bar\\baz").unwrap().as_str(),
+            "file:///C:/foo%20bar/baz"
         );
 
         assert!(ensure_url_path("bar").is_err());
