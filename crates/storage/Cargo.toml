@@ -9,8 +9,31 @@ repository.workspace = true
 
 [dependencies]
 klin-shared.workspace = true
-rusqlite.workspace = true
+rusqlite = { workspace = true, features = ["functions", "window", "limits", "unlock_notify", "fallible_uint"] }
+# Зависимости перенесённого places (application-services).
+serde = { version = "1", features = ["derive"] }
+serde_derive = "1"
+serde_json = "1"
+parking_lot = "0.12"
+lazy_static = "1.4"
+url = { workspace = true, features = ["serde"] }
+percent-encoding = "2.1"
+icu_casemap = "2"
+bitflags = "1.2"
+idna = "1.0.3"
+memchr = "2.3"
+thiserror.workspace = true
+anyhow = "1.0"
+rand = "0.8"
+base64 = "0.21"
 log.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+# Инструменты отладки SQL из sql-support (application-services).
+debug-tools = []

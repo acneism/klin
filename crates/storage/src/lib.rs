@@ -5,5 +5,7 @@
 //! Дальше (0.2): places, logins, sessionstore.
 
 pub mod content_prefs;
+pub mod places;
+pub(crate) mod support;
 
 pub use content_prefs::ContentPrefs;
