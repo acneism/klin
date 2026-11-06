@@ -254,6 +254,26 @@ impl Browser {
         }
     }
 
+    /// Перетащить вкладку на позицию `index` в её окне. Выбранная вкладка остаётся выбранной.
+    pub fn move_tab(&mut self, tab: TabId, index: usize) {
+        let Some(window) = self.tabs.get(&tab).map(|t| t.window) else {
+            return;
+        };
+        let Some(win) = self.window_mut(window) else {
+            return;
+        };
+        let Some(from) = win.tabs.iter().position(|&t| t == tab) else {
+            return;
+        };
+        let selected = win.selected_tab();
+        let index = index.min(win.tabs.len() - 1);
+        let moved = win.tabs.remove(from);
+        win.tabs.insert(index, moved);
+        if let Some(sel) = selected {
+            win.selected = win.tabs.iter().position(|&t| t == sel).unwrap_or(0);
+        }
+    }
+
     /// Закрыть вкладку. Возвращает эффекты (например, закрытие окна с последней вкладкой).
     pub fn close_tab(&mut self, engine: &mut dyn Engine, tab: TabId) -> Vec<UiEffect> {
         let Some(closed) = self.tabs.remove(&tab) else {
@@ -769,6 +789,26 @@ mod tests {
                 .iter()
                 .any(|c| matches!(c, Call::OpenTab(_, win, _, true) if *win == id))
         );
+    }
+
+    #[test]
+    fn dragging_a_tab_keeps_selection() {
+        let (mut b, mut e, w) = setup();
+        b.open_tab(&mut e, w, url("https://b.example/"), None, false);
+        b.open_tab(&mut e, w, url("https://c.example/"), None, false);
+        let a = b.window(w).unwrap().tabs[0];
+        b.move_tab(a, 2);
+        assert_eq!(
+            tab_urls(&b, w),
+            [
+                "https://b.example/",
+                "https://c.example/",
+                "https://a.example/"
+            ]
+        );
+        assert_eq!(b.window(w).unwrap().selected_tab(), Some(a));
+        b.move_tab(a, 99);
+        assert_eq!(b.window(w).unwrap().tabs[2], a);
     }
 
     #[test]

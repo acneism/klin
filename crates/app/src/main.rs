@@ -444,6 +444,7 @@ impl Running {
         match action {
             Action::Execute(cmd) => self.execute(event_loop, id, cmd),
             Action::SelectTab(tab) => self.browser.select_tab(&mut self.engine, tab),
+            Action::MoveTab { tab, index } => self.browser.move_tab(tab, index),
             Action::CloseTab(tab) => {
                 let effects = self.browser.close_tab(&mut self.engine, tab);
                 self.apply(event_loop, effects);

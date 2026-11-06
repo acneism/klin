@@ -28,6 +28,11 @@ pub enum Action {
     Navigate(String),
     /// Клик по странице: фокус ввода переходит к ней.
     FocusPage,
+    /// Вкладку перетащили на позицию `index`.
+    MoveTab {
+        tab: TabId,
+        index: usize,
+    },
     /// Ответ на запрос страницы (диалог, меню, список).
     Answer {
         tab: TabId,
@@ -180,12 +185,32 @@ impl BrowserUi {
                 .max_width(available)
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
+                        let mut rects = Vec::with_capacity(win.tabs.len());
+                        let mut dragged = None;
                         for (index, &tab_id) in win.tabs.iter().enumerate() {
                             let Some(tab) = browser.tab(tab_id) else {
                                 continue;
                             };
                             let icon = self.favicons.texture(ui.ctx(), tab);
-                            tab_button(ui, tab, icon, index == win.selected, width, actions);
+                            let (rect, is_dragged) =
+                                tab_button(ui, tab, icon, index == win.selected, width, actions);
+                            if is_dragged {
+                                dragged = Some((tab_id, index));
+                            }
+                            rects.push((tab_id, rect));
+                        }
+                        // Перетаскивание: вкладка встаёт перед первой вкладкой, чей центр правее
+                        // указателя, и переезжает сразу, как в Firefox.
+                        if let (Some((tab, from)), Some(pointer)) =
+                            (dragged, ui.ctx().pointer_interact_pos())
+                        {
+                            let to = rects
+                                .iter()
+                                .filter(|(id, r)| *id != tab && r.center().x < pointer.x)
+                                .count();
+                            if to != from {
+                                actions.push(Action::MoveTab { tab, index: to });
+                            }
                         }
                     });
                 });
@@ -297,9 +322,15 @@ fn tab_button(
     selected: bool,
     width: f32,
     actions: &mut Vec<Action>,
-) {
+) -> (Rect, bool) {
     let title = tab_title(tab);
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 30.0), Sense::click());
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 30.0), Sense::hover());
+    // Id по вкладке, а не по месту в ряду: иначе перетаскивание обрывается, когда вкладка переезжает.
+    let response = ui.interact(
+        rect,
+        egui::Id::new(("klin-tab", tab.id)),
+        Sense::click_and_drag(),
+    );
     let visuals = ui.visuals().clone();
     let fill = if selected {
         visuals.widgets.active.weak_bg_fill
@@ -369,10 +400,22 @@ fn tab_button(
     if close.clicked() || response.middle_clicked() {
         // Средняя кнопка мыши закрывает вкладку, как в Firefox.
         actions.push(Action::CloseTab(tab.id));
-    } else if response.clicked() {
+    } else if !selected
+        && !close.contains_pointer()
+        && response.contains_pointer()
+        && ui.input(|i| i.pointer.primary_pressed())
+    {
+        // Firefox выбирает вкладку уже по нажатию кнопки, поэтому перетаскиваемая
+        // вкладка становится выбранной; кнопка закрытия фоновую вкладку не выбирает.
         actions.push(Action::SelectTab(tab.id));
     }
-    response.on_hover_text(title);
+    let dragged = response.dragged();
+    if dragged {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+    } else {
+        response.on_hover_text(title);
+    }
+    (rect, dragged)
 }
 
 /// Заголовок вкладки: заголовок страницы, иначе адрес, иначе «Новая вкладка».
