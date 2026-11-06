@@ -1,5 +1,3 @@
-//! `WebViewDelegate`: события Servo → события ядра.
-
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::{Rc, Weak};
@@ -19,7 +17,6 @@ use servo::{
 use crate::Surface;
 use crate::protocol;
 
-/// Состояние, общее для движка и делегата (всё в главном потоке).
 #[derive(Default)]
 pub(crate) struct Shared {
     pub surfaces: RefCell<HashMap<WindowId, Rc<Surface>>>,
@@ -28,12 +25,8 @@ pub(crate) struct Shared {
     pub tabs: RefCell<HashMap<WebViewId, TabId>>,
     pub webviews: RefCell<HashMap<TabId, WebView>>,
     pub pending: RefCell<HashMap<RequestId, (TabId, Pending)>>,
-    /// Элементы управления, которые Servo может снять сам (`hide_embedder_control`).
     pub controls: RefCell<Vec<(EmbedderControlId, TabId, RequestId)>>,
-    /// Видимая вкладка каждого окна.
     pub visible: RefCell<HashMap<WindowId, TabId>>,
-    /// Вкладка, из которой выбрали «Открыть ссылку в новой вкладке»: следующая вкладка
-    /// от неё открывается в фоне (`browser.tabs.loadInBackground`).
     pub background_opener: RefCell<Option<TabId>>,
 }
 
@@ -69,12 +62,11 @@ impl Shared {
                 visible.remove(&window);
             }
         }
-        // Отпущенные запросы Servo закрывает сам со значением по умолчанию.
+
         self.pending.borrow_mut().retain(|_, (t, _)| *t != tab);
         self.controls.borrow_mut().retain(|(_, t, _)| *t != tab);
     }
 
-    /// Снять запрос с учёта, когда на него ответили.
     pub fn take(&self, id: RequestId) -> Option<(TabId, Pending)> {
         self.controls.borrow_mut().retain(|(_, _, r)| *r != id);
         self.pending.borrow_mut().remove(&id)
@@ -101,8 +93,6 @@ impl Shared {
     }
 }
 
-/// Запрос Servo, ждущий ответа интерфейса. Если объект отпущен без ответа,
-/// Servo сам отвечает значением по умолчанию (отказ).
 pub(crate) enum Pending {
     Dialog(SimpleDialog),
     Permission(PermissionRequest),
@@ -140,7 +130,7 @@ impl Pending {
                 select.select(ids);
                 select.submit();
             }
-            // Закрытый без выбора список оставляет прежнее значение.
+
             (Pending::Select(select), _) => select.submit(),
         }
     }
@@ -269,7 +259,6 @@ impl WebViewDelegate for Delegate {
     }
 
     fn notify_history_changed(&self, webview: WebView, entries: Vec<Url>, current: usize) {
-        // Внутренние страницы (klin:) ядро видит как about:-адреса.
         let entries = entries.into_iter().map(protocol::display_url).collect();
         self.with_tab(&webview, |tab| EngineEvent::HistoryChanged {
             tab,
@@ -296,14 +285,14 @@ impl WebViewDelegate for Delegate {
         let Some(this) = self.this.upgrade() else {
             return;
         };
-        // Новая вкладка — в окне вкладки-источника.
+
         let Some(window) = self.shared.window_of(opener) else {
             return;
         };
         let Some(surface) = self.shared.surfaces.borrow().get(&window).cloned() else {
             return;
         };
-        // WebView создаём сразу: Servo требует ответа в этом вызове, чтобы сохранить opener.
+
         let webview = request
             .builder(surface.page_context.clone() as Rc<dyn RenderingContext>)
             .hidpi_scale_factor(Scale::new(surface.scale.get()))
@@ -433,7 +422,7 @@ impl WebViewDelegate for Delegate {
                 self.shared
                     .control(tab, control_id, kind, Pending::Select(select));
             }
-            // Выбор цвета и IME — позже; отпущенный запрос Servo закрывает сам.
+
             _ => {}
         }
     }
@@ -444,7 +433,6 @@ impl WebViewDelegate for Delegate {
             && request.method == http::Method::GET
             && klin_core::downloads::looks_like_download(&request.url);
         if !is_download {
-            // Отпущенный запрос Servo загружает сам.
             return;
         }
         let Some(tab) = self.shared.tab(&webview) else {
@@ -452,7 +440,7 @@ impl WebViewDelegate for Delegate {
         };
         let url = request.url.clone();
         let referrer = request.referrer_url.clone();
-        // Ответ 204 No Content: по спецификации переход тихо отменяется, страница остаётся.
+
         let response =
             servo::WebResourceResponse::new(url.clone()).status_code(http::StatusCode::NO_CONTENT);
         load.intercept(response).finish();

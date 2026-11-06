@@ -1,6 +1,3 @@
-//! Панель поиска на странице (Ctrl+F) — по образцу findbar Firefox: внизу окна, поиск по мере
-//! ввода, Enter / Shift+Enter, F3, «С учётом регистра», «Только слова целиком», счётчик.
-
 use std::collections::HashMap;
 
 use egui::{Key, RichText};
@@ -17,9 +14,7 @@ pub(crate) struct FindBar {
     pub query: String,
     pub case_sensitive: bool,
     pub whole_word: bool,
-    /// Поставить фокус в поле и выделить запрос (Ctrl+F).
     pub focus: bool,
-    /// Вернуть фокус в поле без выделения (после Enter).
     pub refocus: bool,
 }
 
@@ -35,7 +30,6 @@ impl FindBars {
         bar.focus = true;
     }
 
-    /// F3 / Shift+F3: следующее совпадение; без запроса — открыть панель (как в Firefox).
     pub fn again(&mut self, tab: TabId, backwards: bool) -> Option<Action> {
         let bar = self.bars.entry(tab).or_default();
         if bar.query.is_empty() {
@@ -73,7 +67,6 @@ fn request(tab: TabId, bar: &FindBar, direction: FindDirection) -> Action {
     }
 }
 
-/// Строка состояния — тексты панели поиска Firefox.
 pub(crate) fn status(tab: &Tab, query: &str) -> Option<String> {
     if query.is_empty() {
         return None;
@@ -95,7 +88,6 @@ pub(crate) fn status(tab: &Tab, query: &str) -> Option<String> {
     })
 }
 
-/// Склонение как в строке Firefox `findbar-found-matches` (ru): «1 из 21 совпадения», «1 из 5 совпадений».
 fn matches_noun(total: usize) -> &'static str {
     if total % 10 == 1 && total % 100 != 11 {
         "совпадения"
@@ -104,7 +96,6 @@ fn matches_noun(total: usize) -> &'static str {
     }
 }
 
-/// Нарисовать панель. Возвращает `false`, если её закрыли.
 pub(crate) fn show(
     ui: &mut egui::Ui,
     tab: &Tab,
@@ -138,7 +129,6 @@ pub(crate) fn show(
             field.request_focus();
         }
         if field.changed() {
-            // Поиск по мере ввода, как в Firefox.
             actions.push(request(tab.id, bar, FindDirection::First));
         }
         if field.lost_focus() {
@@ -174,8 +164,7 @@ pub(crate) fn show(
         {
             actions.push(request(tab.id, bar, FindDirection::Previous));
         }
-        // Отступление от Firefox: в Servo нет CSS Custom Highlight API, подсветка всех
-        // совпадений потребовала бы менять DOM страницы.
+
         let mut highlight = false;
         ui.add_enabled(false, egui::Checkbox::new(&mut highlight, "Подсветить все"))
             .on_disabled_hover_text("Движок Servo пока не умеет подсвечивать совпадения");

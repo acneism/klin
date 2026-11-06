@@ -1,5 +1,3 @@
-//! Перевод типов ядра в типы Servo и обратно.
-
 use std::str::FromStr;
 
 use klin_core::InputEvent;
@@ -107,7 +105,6 @@ fn named_key(key: NamedKey) -> keyboard_types::NamedKey {
     }
 }
 
-/// Значок сайта → RGBA8.
 pub(crate) fn image(image: &servo::Image) -> Option<Image> {
     let data = image.data();
     let rgba = match image.format {

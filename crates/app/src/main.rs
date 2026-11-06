@@ -1,9 +1,3 @@
-//! Klin: точка входа и цикл событий winit.
-//!
-//! Одно окно: вкладки и адресная строка на egui, страница Servo под ними.
-//! Горячие клавиши Firefox работают через команды ядра. Адрес можно передать аргументом:
-//! `klin https://servo.org`.
-
 mod file_picker;
 
 use std::error::Error;
@@ -39,11 +33,11 @@ use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use winit::window::{Window, WindowAttributes};
 
 const APP_NAME: &str = "Klin";
-/// Сколько подсказок показывает адресная строка (`browser.urlbar.maxRichResults` в Firefox — 10).
+
 const SUGGESTIONS_LIMIT: u32 = 10;
-/// Сколько последних посещений загружает боковая панель истории.
+
 const HISTORY_SIDEBAR_LIMIT: usize = 500;
-/// `browser.sessionstore.interval`
+
 const SESSION_INTERVAL: Duration =
     Duration::from_millis(klin_core::prefs::SESSIONSTORE_INTERVAL_MS);
 
@@ -51,7 +45,6 @@ const SESSION_INTERVAL: Duration =
 struct Wake;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    // Логгер не ставим: его устанавливает `Servo::setup_logging` (env_logger, переменная RUST_LOG).
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
         .map_err(|_| "failed to install rustls crypto provider")?;
@@ -60,7 +53,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let profile = match Profile::open(args.profile) {
         Ok(profile) => profile,
         Err(ProfileError::Locked(dir)) => {
-            // Как в Firefox: профиль занят другим процессом.
             eprintln!(
                 "{APP_NAME} уже запущен, но не отвечает. Чтобы открыть новое окно, \
                  закройте старый процесс {APP_NAME}.\nПрофиль: {}",
@@ -73,7 +65,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let start_url = args.url.and_then(|arg| {
         klin_core::urifixup::to_url(&arg, &klin_core::urifixup::SearchEngine::default())
     });
-    // Настройки и файл сессии читаются до появления окна (поток интерфейса ещё не работает).
+
     let prefs = read_user_prefs(&profile.dir);
     let session_paths = SessionPaths::new(&profile.dir);
     let startup = sessionstore::startup_session(
@@ -100,12 +92,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Аргументы командной строки — имена как у Firefox.
 #[derive(Debug, Default, PartialEq)]
 struct Args {
-    /// `-profile <путь>` / `--profile <путь>`
     profile: Option<std::path::PathBuf>,
-    /// Первый аргумент без флага — адрес или поисковый запрос.
     url: Option<String>,
 }
 
@@ -138,14 +127,12 @@ enum App {
     Failed,
 }
 
-/// Окно браузера: окно ОС, egui и состояние интерфейса этого окна.
 struct BrowserWindow {
     id: WindowId,
     private: bool,
     egui_state: egui_winit::State,
     painter: egui_glow::Painter,
     ui: BrowserUi,
-    /// Область страницы в физических пикселях окна: x, y, ширина, высота.
     page_rect: [f32; 4],
     ui_has_focus: bool,
     page_blocked: bool,
@@ -156,7 +143,6 @@ struct BrowserWindow {
 }
 
 impl BrowserWindow {
-    /// Точка окна → точка страницы, если она внутри страницы.
     fn page_point(&self) -> Option<(f32, f32)> {
         if self.page_blocked {
             return None;
@@ -175,7 +161,6 @@ struct Running {
     zoom_rx: Receiver<Vec<(String, f64)>>,
     downloads: DownloadService,
     download_rx: Receiver<DownloadEvent>,
-    /// Запросы на загрузку, для которых уже получены cookies движка.
     download_start_tx: Sender<DownloadRequest>,
     download_start_rx: Receiver<DownloadRequest>,
     places: PlacesService,
@@ -187,17 +172,13 @@ struct Running {
     history_tx: Sender<(WindowId, Vec<klin_ui::HistoryItem>)>,
     browser: Browser,
     shortcuts: Vec<(KeyChord, Command)>,
-    // Порядок важен: движок (и GL-контексты окон) отпускается раньше окон ОС.
     engine: ServoEngine,
     windows: Vec<BrowserWindow>,
     session_writer: Option<SessionWriter>,
-    /// Последний непустой снимок: он записывается при выходе, даже если последнее окно
-    /// уже закрыто в ядре.
     last_session: Session,
     saved_session: Session,
     next_session_save: Instant,
     focused: Option<WindowId>,
-    /// Последним: блокировка профиля снимается, когда всё остальное уже закрыто.
     _profile: Profile,
 }
 
@@ -269,7 +250,6 @@ impl ApplicationHandler<Wake> for App {
     }
 }
 
-/// `prefs.js` и `user.js` профиля (как в Firefox, `user.js` перекрывает `prefs.js`).
 fn read_user_prefs(dir: &std::path::Path) -> UserPrefs {
     let read = |name: &str| std::fs::read_to_string(dir.join(name)).unwrap_or_default();
     let (prefs_js, user_js) = (read("prefs.js"), read("user.js"));
@@ -287,7 +267,6 @@ impl Running {
         let waker = {
             let proxy = proxy.clone();
             Waker::new(move || {
-                // Ошибка означает, что цикл событий уже завершён.
                 let _ = proxy.send_event(Wake);
             })
         };
@@ -299,7 +278,6 @@ impl Running {
             },
         )?;
 
-        // Масштаб сайтов загружается в фоне и применяется, когда придёт.
         let content_prefs = ContentPrefs::start(profile.path("content-prefs.sqlite"));
         let (zoom_tx, zoom_rx) = channel();
         {
@@ -355,7 +333,7 @@ impl Running {
                 for state in &session.windows {
                     running.restore_window(event_loop, state)?;
                 }
-                // Адрес из командной строки открывается в новой вкладке, как в Firefox.
+
                 if let (Some(url), Some(first)) = (start_url, running.windows.first().map(|w| w.id))
                 {
                     running
@@ -370,7 +348,6 @@ impl Running {
         Ok(running)
     }
 
-    /// Создать окно ОС, его поверхность в движке и окно в ядре с первой вкладкой.
     fn open_window(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -383,7 +360,6 @@ impl Running {
         Ok(id)
     }
 
-    /// Окно из сохранённой сессии.
     fn restore_window(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -395,7 +371,6 @@ impl Running {
         Ok(id)
     }
 
-    /// Окно ОС, его поверхность в движке и интерфейс; вкладок в нём ещё нет.
     fn create_os_window(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -429,7 +404,6 @@ impl Running {
         );
         let mut ui = BrowserUi::new();
         if focus_url_bar {
-            // Новое окно с пустой вкладкой: курсор сразу в адресной строке, как в Firefox.
             ui.focus_url_bar();
         }
         self.windows.push(BrowserWindow {
@@ -449,18 +423,17 @@ impl Running {
         Ok(id)
     }
 
-    /// Окно уже закрыто в ядре: убрать интерфейс, поверхность движка и окно ОС.
     fn close_window(&mut self, event_loop: &ActiveEventLoop, id: WindowId) {
         let Some(index) = self.windows.iter().position(|w| w.id == id) else {
             return;
         };
         let mut win = self.windows.remove(index);
-        // Текстуры egui удаляются, пока GL-контекст окна ещё жив.
+
         self.engine.make_current(id);
         win.painter.destroy();
         self.engine.remove_window(id);
         drop(win);
-        // Как Firefox на Windows: с последним окном завершается и браузер.
+
         if self.windows.is_empty() {
             event_loop.exit();
         }
@@ -545,7 +518,6 @@ impl Running {
         }
     }
 
-    /// Кадр окна: страница во внеэкранный буфер, затем интерфейс egui и страница в своей области.
     fn redraw(&mut self, event_loop: &ActiveEventLoop, id: WindowId) {
         let Some(index) = self.windows.iter().position(|w| w.id == id) else {
             return;
@@ -598,8 +570,7 @@ impl Running {
         }
         if let Some(frame) = frame {
             w.ui_has_focus = frame.ui_has_focus;
-            // Фокус у страницы не забираем: Servo закрывает свои элементы управления
-            // (например, список <select>) при потере фокуса. Ввод просто не передаётся.
+
             w.page_blocked = frame.page_blocked;
             let ppp = full.pixels_per_point;
             let r = frame.page_rect;
@@ -723,7 +694,6 @@ impl Running {
                     url,
                     referrer,
                 } => {
-                    // Файл скачивает служба загрузок с cookies и User-Agent движка.
                     let user_agent = self.engine.user_agent();
                     let tx = self.download_start_tx.clone();
                     let proxy = self.proxy.clone();
@@ -738,7 +708,7 @@ impl Running {
                         let _ = tx.send(request);
                         let _ = proxy.send_event(Wake);
                     });
-                    // Как в Firefox (`browser.download.alwaysOpenPanel`): панель открывается сама.
+
                     if let Some(w) = self.win_mut(window) {
                         w.ui.open_downloads();
                         w.window.request_redraw();
@@ -756,7 +726,7 @@ impl Running {
                         VisitKind::Reload => Transition::Reload,
                     };
                     self.places.record_visit(url, transition, referrer);
-                    // Открытые панели истории обновляются.
+
                     let open: Vec<WindowId> = self
                         .windows
                         .iter()
@@ -813,8 +783,6 @@ impl Running {
                     }
                 }
                 UiEffect::SiteZoomChanged { site, zoom } => {
-                    // Шаги масштаба Firefox — с двумя знаками (1.1, 1.33); без округления
-                    // f32 → f64 дал бы 1.2000000476837158.
                     let zoom = zoom.map(|z| (f64::from(z) * 100.0).round() / 100.0);
                     self.content_prefs.set(&site, FULL_ZOOM, zoom);
                 }
@@ -823,8 +791,6 @@ impl Running {
         }
     }
 
-    /// Снимок сессии после каждой пачки событий; запись — не чаще раза в
-    /// `browser.sessionstore.interval` и только если что-то изменилось.
     fn tick_session(&mut self, event_loop: &ActiveEventLoop) {
         let snapshot = self.browser.session_snapshot(self.focused);
         if !snapshot.windows.is_empty() {
@@ -843,7 +809,6 @@ impl Running {
         event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_session_save));
     }
 
-    /// Обычный выход: записать сессию как завершённую.
     fn finish_session(&mut self) {
         if let Some(writer) = self.session_writer.take() {
             writer.finish(self.last_session.clone());
@@ -866,7 +831,6 @@ impl Running {
         }
     }
 
-    /// Загрузить последние посещения в боковую панель окна.
     fn load_history(&self, window: WindowId) {
         let tx = self.history_tx.clone();
         let proxy = self.proxy.clone();
@@ -892,8 +856,7 @@ impl Running {
                 .selected_tab(w.id)
                 .map(|t| t.title.trim().to_owned())
                 .filter(|t| !t.is_empty());
-            // Как в Firefox: «Заголовок страницы — Имя браузера».
-            // TODO(0.2): подпись приватного окна — из строк Firefox (Fluent).
+
             let app = if w.private {
                 format!("{APP_NAME} — приватный просмотр")
             } else {
@@ -955,7 +918,7 @@ impl Running {
                     let cmd = key.and_then(|k| {
                         command::lookup(&self.shortcuts, KeyChord::new(modifiers, k))
                     });
-                    // Esc в адресной строке отменяет правку, а не останавливает загрузку.
+
                     let ui_owns = ui_has_focus && cmd == Some(Command::Stop);
                     if let Some(cmd) = cmd.filter(|_| !ui_owns) {
                         self.execute(event_loop, id, cmd);
@@ -963,7 +926,7 @@ impl Running {
                     }
                 }
                 if ui_has_focus {
-                    return; // клавиша уже у egui
+                    return;
                 }
                 let code = match event.physical_key {
                     PhysicalKey::Code(code) => Some(format!("{code:?}")),
@@ -997,7 +960,7 @@ impl Running {
                     winit::event::MouseButton::Other(_) => return,
                 };
                 let pressed = state == ElementState::Pressed;
-                // Боковые кнопки мыши — «Назад»/«Вперёд», как в Firefox.
+
                 if pressed && matches!(button, MouseButton::Back | MouseButton::Forward) {
                     let cmd = if button == MouseButton::Back {
                         Command::Back
@@ -1020,7 +983,6 @@ impl Running {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                // 76 пикселей на строку — как в servoshell.
                 let (dx, dy) = match delta {
                     MouseScrollDelta::LineDelta(x, y) => (f64::from(x) * 76.0, f64::from(y) * 76.0),
                     MouseScrollDelta::PixelDelta(d) => (d.x, d.y),
@@ -1036,7 +998,6 @@ impl Running {
 
 impl Drop for Running {
     fn drop(&mut self) {
-        // Текстуры egui удаляются, пока GL-контексты окон ещё живы.
         for w in &mut self.windows {
             self.engine.make_current(w.id);
             w.painter.destroy();
@@ -1053,8 +1014,6 @@ fn modifiers(state: ModifiersState) -> Modifiers {
     }
 }
 
-/// Клавиша для таблицы горячих клавиш. С Ctrl/Alt буквы и цифры берутся по физической
-/// клавише, чтобы сочетания работали в любой раскладке (в Firefox Ctrl+T работает и в русской).
 fn key(logical: &keyboard::Key, physical: PhysicalKey, mods: Modifiers) -> Option<Key> {
     use keyboard::NamedKey as W;
     if (mods.ctrl || mods.alt)

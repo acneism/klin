@@ -17,34 +17,32 @@ enum RedirectBonus {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrecencySettings {
-    // TODO: These probably should not all be i32s...
-    pub num_visits: i32,                     // from "places.frecency.numVisits"
-    pub first_bucket_cutoff_days: i32,       // from "places.frecency.firstBucketCutoff"
-    pub second_bucket_cutoff_days: i32,      // from "places.frecency.secondBucketCutoff"
-    pub third_bucket_cutoff_days: i32,       // from "places.frecency.thirdBucketCutoff"
-    pub fourth_bucket_cutoff_days: i32,      // from "places.frecency.fourthBucketCutoff"
-    pub first_bucket_weight: i32,            // from "places.frecency.firstBucketWeight"
-    pub second_bucket_weight: i32,           // from "places.frecency.secondBucketWeight"
-    pub third_bucket_weight: i32,            // from "places.frecency.thirdBucketWeight"
-    pub fourth_bucket_weight: i32,           // from "places.frecency.fourthBucketWeight"
-    pub default_bucket_weight: i32,          // from "places.frecency.defaultBucketWeight"
-    pub embed_visit_bonus: i32,              // from "places.frecency.embedVisitBonus"
-    pub framed_link_visit_bonus: i32,        // from "places.frecency.framedLinkVisitBonus"
-    pub link_visit_bonus: i32,               // from "places.frecency.linkVisitBonus"
-    pub typed_visit_bonus: i32,              // from "places.frecency.typedVisitBonus"
-    pub bookmark_visit_bonus: i32,           // from "places.frecency.bookmarkVisitBonus"
-    pub download_visit_bonus: i32,           // from "places.frecency.downloadVisitBonus"
-    pub permanent_redirect_visit_bonus: i32, // from "places.frecency.permRedirectVisitBonus"
-    pub temporary_redirect_visit_bonus: i32, // from "places.frecency.tempRedirectVisitBonus"
-    pub redirect_source_visit_bonus: i32,    // from "places.frecency.redirectSourceVisitBonus"
-    pub default_visit_bonus: i32,            // from "places.frecency.defaultVisitBonus"
-    pub unvisited_bookmark_bonus: i32,       // from "places.frecency.unvisitedBookmarkBonus"
-    pub unvisited_typed_bonus: i32,          // from "places.frecency.unvisitedTypedBonus"
-    pub reload_visit_bonus: i32,             // from "places.frecency.reloadVisitBonus"
+    pub num_visits: i32,
+    pub first_bucket_cutoff_days: i32,
+    pub second_bucket_cutoff_days: i32,
+    pub third_bucket_cutoff_days: i32,
+    pub fourth_bucket_cutoff_days: i32,
+    pub first_bucket_weight: i32,
+    pub second_bucket_weight: i32,
+    pub third_bucket_weight: i32,
+    pub fourth_bucket_weight: i32,
+    pub default_bucket_weight: i32,
+    pub embed_visit_bonus: i32,
+    pub framed_link_visit_bonus: i32,
+    pub link_visit_bonus: i32,
+    pub typed_visit_bonus: i32,
+    pub bookmark_visit_bonus: i32,
+    pub download_visit_bonus: i32,
+    pub permanent_redirect_visit_bonus: i32,
+    pub temporary_redirect_visit_bonus: i32,
+    pub redirect_source_visit_bonus: i32,
+    pub default_visit_bonus: i32,
+    pub unvisited_bookmark_bonus: i32,
+    pub unvisited_typed_bonus: i32,
+    pub reload_visit_bonus: i32,
 }
 
 pub const DEFAULT_FRECENCY_SETTINGS: FrecencySettings = FrecencySettings {
-    // These are the default values of the preferences.
     num_visits: 10,
     first_bucket_cutoff_days: 4,
     second_bucket_cutoff_days: 14,
@@ -78,7 +76,6 @@ impl Default for FrecencySettings {
 }
 
 impl FrecencySettings {
-    // Note: in Places, `redirect` defaults to false.
     pub fn get_transition_bonus(
         &self,
         visit_type: Option<VisitType>,
@@ -101,7 +98,7 @@ impl FrecencySettings {
             (Some(VisitType::Bookmark), true) => self.bookmark_visit_bonus,
             (Some(VisitType::Bookmark), false) => self.unvisited_bookmark_bonus,
             (Some(VisitType::UpdatePlace), _) => self.default_visit_bonus,
-            // 0 == undefined (see bug 375777 in bugzilla for details)
+
             (None, _) => self.default_visit_bonus,
         }
     }
@@ -126,7 +123,6 @@ struct FrecencyComputation<'db, 's> {
     settings: &'s FrecencySettings,
     page_id: i64,
     most_recent_redirect_bonus: RedirectBonus,
-
     typed: i32,
     visit_count: i32,
     foreign_count: i32,
@@ -152,7 +148,7 @@ impl<'db, 's> FrecencyComputation<'db, 's> {
         ",
         )?;
         let mut rows = stmt.query(&[(":page_id", &page_id)])?;
-        // trace_error to track down #4856
+
         let row = trace_error!(rows.next()?.ok_or(rusqlite::Error::QueryReturnedNoRows))?;
         let typed: i32 = row.get("typed")?;
         let visit_count: i32 = row.get("visit_count")?;
@@ -176,10 +172,6 @@ impl<'db, 's> FrecencyComputation<'db, 's> {
     }
 
     fn score_recent_visits(&self) -> Result<(usize, f32)> {
-        // Get a sample of the last visits to the page, to calculate its weight.
-        // In case the visit is a redirect target, calculate the frecency
-        // as if the original page was visited.
-        // If it's a redirect source, we may want to use a lower bonus.
         let get_recent_visits = format!(
             "SELECT
                  IFNULL(origin.visit_type, v.visit_type) AS visit_type,
@@ -195,8 +187,6 @@ impl<'db, 's> FrecencyComputation<'db, 's> {
              LIMIT {max_visits}",
             redirect_permanent = VisitType::RedirectPermanent as u8,
             redirect_temporary = VisitType::RedirectTemporary as u8,
-            // in practice this is constant, so caching the query is fine.
-            // (rusqlite has a max cache size too should things change)
             max_visits = self.settings.num_visits,
         );
 
@@ -225,10 +215,7 @@ impl<'db, 's> FrecencyComputation<'db, 's> {
 
         for row_result in row_iter {
             let (visit_type, target_visit_type, age_in_days) = row_result?;
-            // When adding a new visit, we should haved passed-in whether we should
-            // use the redirect bonus. We can't fetch this information from the
-            // database, because we only store redirect targets.
-            // For older visits we extract the value from the database.
+
             let use_redirect_bonus = if self.most_recent_redirect_bonus == RedirectBonus::Unknown
                 || num_sampled_visits > 0
             {
@@ -260,22 +247,13 @@ impl<'db, 's> FrecencyComputation<'db, 's> {
 
     fn get_frecency_for_sample(&self, num_sampled: usize, score: f32) -> i32 {
         if score == 0.0f32 {
-            // We were unable to calculate points, maybe cause all the visits in the
-            // sample had a zero bonus. Though, we know the page has some past valid
-            // visit, or visit_count would be zero. Thus we set the frecency to
-            // -1, so they are still shown in autocomplete.
             -1
         } else {
-            // Estimate frecency using the sampled visits.
-            // Use ceil() so that we don't round down to 0, which
-            // would cause us to completely ignore the place during autocomplete.
             ((self.visit_count as f32) * score.ceil() / (num_sampled as f32)).ceil() as i32
         }
     }
 
     fn compute_unvisited_bookmark_frecency(&self) -> i32 {
-        // Make it so something bookmarked and typed will have a higher frecency
-        // than something just typed or just bookmarked.
         let mut bonus = self
             .settings
             .get_transition_bonus(Some(VisitType::Bookmark), false, false);
@@ -285,11 +263,8 @@ impl<'db, 's> FrecencyComputation<'db, 's> {
                 .get_transition_bonus(Some(VisitType::Typed), false, false);
         }
 
-        // Assume "now" as our age_in_days, so use the first bucket.
         let score = (self.settings.first_bucket_weight as f32) * (bonus as f32 / 100.0f32);
 
-        // use ceil() so that we don't round down to 0, which
-        // would cause us to completely ignore the place during autocomplete
         score.ceil() as i32
     }
 }
@@ -317,14 +292,10 @@ pub fn calculate_frecency(
     };
 
     Ok(if num_sampled_visits > 0 {
-        // If we sampled some visits for this page, use the calculated weight.
         fc.get_frecency_for_sample(num_sampled_visits, sample_score)
     } else if !fc.has_bookmark() || fc.is_query {
-        // Otherwise, this page has no visits, it may be bookmarked.
         0
     } else {
-        // For unvisited bookmarks, produce a non-zero frecency, so that they show
-        // up in URL bar autocomplete.
         fc.compute_unvisited_bookmark_frecency()
     })
 }

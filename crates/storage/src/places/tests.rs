@@ -29,9 +29,6 @@ pub struct InvalidBookmarkIds {
     pub guid: SyncGuid,
 }
 
-// Append a bookmark with an invalid URL to the specified parent. Note that it's
-// currently impossible to append a bookmark with NULL as there is a CHECK
-// constraint in the schema.
 pub fn append_invalid_bookmark(
     db: &PlacesDb,
     parent_guid: &SyncGuid,
@@ -45,7 +42,6 @@ pub fn append_invalid_bookmark(
     let position = parent.child_count;
     let guid = SyncGuid::random();
 
-    // Assume the invalid URL isn't already there.
     let place_sql = "
         INSERT INTO moz_places (guid, url, url_hash)
         VALUES (:guid, :url, hash(:url))";
@@ -99,17 +95,11 @@ pub fn assert_json_tree_with_depth(
         .unwrap();
     let deser_tree: BookmarkTreeNode = serde_json::from_value(expected).unwrap();
     assert_eq!(fetched, deser_tree);
-    // and while checking the tree, check positions are correct.
+
     check_positions(conn);
 }
 
-// check the positions for children in a folder are "correct" in that
-// the first child has a value of zero, etc - ie, this will fail if there
-// are holes or duplicates in the position values.
-// Clever implementation stolen from desktop.
 pub fn check_positions(conn: &PlacesDb) {
-    // Use triangular numbers to detect skipped position, then
-    // a subquery to select enough fields to help diagnose when it fails.
     let sql = "
         WITH bad_parents(pid) as (
             SELECT parent

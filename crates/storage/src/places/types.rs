@@ -14,45 +14,18 @@ pub use visit_transition_set::VisitTransitionSet;
 #[error("Invalid visit type")]
 pub struct InvalidVisitType;
 
-// NOTE: These discriminator values are the same as those used by Desktop
-// Firefox and are what is written to the database. We also duplicate them
-// as a set of flags in visit_transition_set.rs
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum VisitType {
-    // This transition type means the user followed a link.
     Link = 1,
-
-    // The user typed the page's URL in the
-    // URL bar or selected it from UI (URL bar autocomplete results, etc)
     Typed = 2,
-
-    // The user followed a bookmark to get to the page.
     Bookmark = 3,
-    /*
-     * This transition type is set when some inner content is loaded. This is
-     * true of all images on a page, and the contents of the iframe. It is also
-     * true of any content in a frame if the user did not explicitly follow
-     * a link to get there.
-     */
     Embed = 4,
-
-    // Transition was a permanent redirect.
     RedirectPermanent = 5,
-
-    // Transition was a temporary redirect.
     RedirectTemporary = 6,
-
-    // Transition is a download.
     Download = 7,
-
-    // The user followed a link and got a visit in a frame.
     FramedLink = 8,
-
-    // The page has been reloaded.
     Reload = 9,
-
-    // Internal visit type used for meta data updates. Doesn't represent an actual page visit
     UpdatePlace = 10,
 }
 
@@ -98,8 +71,6 @@ impl serde::de::Visitor<'_> for VisitTransitionSerdeVisitor {
 
     fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<VisitType, E> {
         if value > u64::from(u8::MAX) {
-            // In practice this is *way* out of the valid range of VisitType, but
-            // serde requires us to implement this as visit_u64 so...
             return Err(E::custom(format!("value out of u8 range: {}", value)));
         }
         VisitType::from_primitive(value as u8)
@@ -119,15 +90,12 @@ impl<'de> serde::Deserialize<'de> for VisitType {
     }
 }
 
-/// Bookmark types.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 #[repr(u8)]
 pub enum BookmarkType {
-    Bookmark = 1, // TYPE_BOOKMARK
-    Folder = 2,   // TYPE_FOLDER
-    Separator = 3, // TYPE_SEPARATOR;
-                  // On desktop, TYPE_DYNAMIC_CONTAINER = 4 but is deprecated - so please
-                  // avoid using this value in the future.
+    Bookmark = 1,
+    Folder = 2,
+    Separator = 3,
 }
 
 impl FromSql for BookmarkType {
@@ -155,8 +123,6 @@ impl BookmarkType {
         match BookmarkType::from_u8(v) {
             Some(BookmarkType::Bookmark) | None => {
                 if has_valid_url() {
-                    // Even if the node says it is a bookmark it still must have a
-                    // valid url.
                     BookmarkType::Bookmark
                 } else {
                     BookmarkType::Folder
@@ -182,21 +148,6 @@ impl Serialize for BookmarkType {
     }
 }
 
-/// Re SyncStatus - note that:
-/// * logins has synced=0, changed=1, new=2
-/// * desktop bookmarks has unknown=0, new=1, normal=2
-///
-/// This is "places", so eventually bookmarks will have a status - should history
-/// and bookmarks share this enum?
-/// Note that history specifically needs neither (a) login's "changed" (the
-/// changeCounter works there), nor (b) bookmark's "unknown" (as that's only
-/// used after a restore).
-/// History only needs a distinction between "synced" and "new" so it doesn't
-/// accumulate never-to-be-synced tombstones - so we basically copy bookmarks
-/// and treat unknown as new.
-/// Which means we get the "bonus side-effect" ;) of ::Unknown replacing Option<>!
-///
-/// Note that some of these values are in schema.rs
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 #[repr(u8)]
 pub enum SyncStatus {
@@ -232,8 +183,6 @@ impl ToSql for SyncStatus {
     }
 }
 
-// This type is used as a snazzy way to capture all unknown fields from the payload
-// upon deserialization without having to work with a concrete type
 pub type UnknownFields = serde_json::Map<String, serde_json::Value>;
 
 pub(crate) fn serialize_unknown_fields(

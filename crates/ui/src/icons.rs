@@ -1,5 +1,3 @@
-//! Значки панели, нарисованные линиями: не зависят от того, какие символы есть в шрифте.
-
 use egui::{Color32, Pos2, Rect, Response, Sense, Shape, Stroke, Ui, Vec2, pos2, vec2};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -11,21 +9,15 @@ pub enum Icon {
     Home,
     Plus,
     Close,
-    /// Значок страницы без собственного значка (в Firefox — defaultFavicon).
     Globe,
-    /// Кнопка загрузок: стрелка вниз в лоток.
     Download,
-    /// «Показать в папке».
     Folder,
-    /// Звёздочка закладки: контур и залитая.
     Star,
     StarFilled,
-    /// Стрелки «следующее / предыдущее совпадение».
     Down,
     Up,
 }
 
-/// Кнопка-значок размером `size` точек.
 pub fn button(ui: &mut Ui, enabled: bool, icon: Icon, size: f32) -> Response {
     let sense = if enabled {
         Sense::click()
@@ -63,7 +55,7 @@ pub fn paint(painter: &egui::Painter, r: Rect, icon: Icon, color: Color32) {
         Icon::Reload => {
             let c = r.center();
             let radius = r.width() * 0.45;
-            // Дуга почти в полный круг с разрывом справа сверху.
+
             let arc: Vec<Pos2> = (0..=24)
                 .map(|i| {
                     let a = -0.35 + (i as f32 / 24.0) * 5.4;
@@ -135,7 +127,6 @@ pub fn paint(painter: &egui::Painter, r: Rect, icon: Icon, color: Color32) {
                 })
                 .collect();
             if icon == Icon::StarFilled {
-                // Звезда не выпуклая: заливаем центр и лучи отдельно.
                 for k in 0..5 {
                     let tri = vec![
                         points[2 * k],
@@ -173,7 +164,6 @@ pub fn paint(painter: &egui::Painter, r: Rect, icon: Icon, color: Color32) {
     }
 }
 
-/// Индикатор загрузки на месте значка вкладки: вращающаяся дуга.
 pub fn spinner(painter: &egui::Painter, r: Rect, color: Color32, time: f64) {
     let c = r.center();
     let radius = r.width() * 0.45;

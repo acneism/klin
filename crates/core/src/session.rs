@@ -1,6 +1,3 @@
-//! Снимок сессии и восстановление — правила sessionstore Firefox:
-//! приватные окна в сессию не попадают, восстановленные вкладки загружаются при выборе.
-
 use klin_shared::session::{ClosedTabState, EntryState, Session, TabState, WindowState};
 use klin_shared::{LoadStatus, TabId, Url, WindowId};
 
@@ -9,7 +6,6 @@ use crate::engine::Engine;
 use crate::prefs;
 
 impl Browser {
-    /// Снимок для `sessionstore.jsonlz4`. Пустой, если открыты только приватные окна.
     pub fn session_snapshot(&self, focused: Option<WindowId>) -> Session {
         let windows: Vec<&Window> = self.windows.iter().filter(|w| !w.private).collect();
         let selected_window = focused
@@ -34,8 +30,6 @@ impl Browser {
         }
     }
 
-    /// Восстановить окно из сессии в окне `id` (окно ОС уже создано). Загружается только
-    /// выбранная вкладка, остальные — при выборе.
     pub fn restore_window(&mut self, engine: &mut dyn Engine, id: WindowId, state: &WindowState) {
         let closed_tabs = state
             .closed_tabs
@@ -78,7 +72,7 @@ impl Browser {
             return;
         }
         let selected = state.selected.min(count - 1);
-        // Невыбранные вкладки скрыты; движок о них ещё не знает.
+
         self.select_index(engine, id, selected);
     }
 }
@@ -101,7 +95,6 @@ fn lazy_tab(id: TabId, window: WindowId, state: &TabState, current: &EntryState)
         crashed: None,
         requests: Vec::new(),
         bookmarked: None,
-        // Восстановление — не новое посещение.
         next_visit: None,
         committed: false,
         history,
@@ -128,7 +121,6 @@ fn tab_state(tab: &Tab) -> TabState {
         .enumerate()
         .map(|(i, url)| EntryState {
             url: url.clone(),
-            // Servo отдаёт только адреса; заголовок известен для текущей записи.
             title: if i == tab.history_index {
                 tab.title.clone()
             } else {
@@ -217,7 +209,7 @@ mod tests {
         b.open_tab(&mut e, w, url("https://c.example/"), None, false);
         let c = b.window(w).unwrap().tabs[2];
         b.close_tab(&mut e, c);
-        // Приватное окно в сессию не попадает.
+
         b.open_window(
             &mut e,
             WindowId::next(),
@@ -237,7 +229,6 @@ mod tests {
             url("https://c.example/")
         );
 
-        // Восстановление: загружается только выбранная вкладка.
         let mut b2 = Browser::new();
         let mut e2 = FakeEngine::default();
         let w2 = WindowId::next();
@@ -253,7 +244,7 @@ mod tests {
         assert!(!b2.tab(tabs[1]).unwrap().loaded);
         assert_eq!(b2.tab(tabs[0]).unwrap().title, "A");
         assert!(b2.tab(tabs[0]).unwrap().can_back);
-        // Выбор второй вкладки загружает её.
+
         b2.select_tab(&mut e2, tabs[1]);
         assert!(b2.tab(tabs[1]).unwrap().loaded);
         assert!(e2.calls.contains(&Call::OpenTab(
@@ -262,7 +253,7 @@ mod tests {
             url("https://b.example/"),
             false
         )));
-        // Закрытая вкладка восстанавливается Ctrl+Shift+T.
+
         b2.execute(&mut e2, w2, crate::Command::UndoCloseTab);
         assert_eq!(b2.window(w2).unwrap().tabs.len(), 3);
     }

@@ -1,9 +1,3 @@
-//! Служба загрузок — по образцу менеджера загрузок Firefox (`DownloadCore`, `DownloadPaths`).
-//!
-//! Каждая загрузка идёт в своём потоке: данные пишутся в `<имя>.part`, по завершении файл
-//! переименовывается. Как в Firefox по умолчанию (`browser.download.useDownloadDir`),
-//! файл сразу сохраняется в папку загрузок без вопроса, куда сохранить.
-
 mod names;
 
 use std::collections::HashMap;
@@ -21,12 +15,10 @@ use ureq::ResponseExt;
 
 pub use names::{file_name_from_content_disposition, file_name_from_url, sanitize, unique_path};
 
-/// Что нужно, чтобы скачать файл так же, как его запросил бы движок.
 #[derive(Clone, Debug)]
 pub struct DownloadRequest {
     pub url: Url,
     pub referrer: Option<Url>,
-    /// Заголовок `Cookie` из хранилища движка.
     pub cookie: Option<String>,
     pub user_agent: String,
 }
@@ -41,7 +33,6 @@ pub struct DownloadService {
 }
 
 impl DownloadService {
-    /// `events` получает сообщения о ходе загрузок; после каждого вызывается `wake`.
     pub fn new(
         dir: PathBuf,
         events: Sender<DownloadEvent>,
@@ -59,7 +50,6 @@ impl DownloadService {
         &self.dir
     }
 
-    /// Начать загрузку. Имя файла станет известно из ответа сервера.
     pub fn start(&self, request: DownloadRequest) -> DownloadId {
         let id = DownloadId::next();
         let flag = Arc::new(AtomicBool::new(false));
@@ -85,7 +75,6 @@ impl DownloadService {
         id
     }
 
-    /// Отменить загрузку; недокачанный `.part` удаляется.
     pub fn cancel(&self, id: DownloadId) {
         if let Some(flag) = self
             .cancel
@@ -177,7 +166,7 @@ impl Job {
         fs::create_dir_all(&self.dir).map_err(|e| format!("{}: {e}", self.dir.display()))?;
         let path = unique_path(&self.dir, &name);
         let part = part_path(&path);
-        // Занять имя сразу, чтобы параллельная загрузка с тем же именем выбрала другое.
+
         File::create(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         *part_out = Some(part.clone());
         self.send(DownloadEvent::Started {
@@ -204,7 +193,7 @@ impl Job {
             }
             file.write_all(&buffer[..n]).map_err(|e| e.to_string())?;
             received += n as u64;
-            // Не чаще 10 раз в секунду: интерфейсу этого хватает.
+
             if last_report.elapsed() >= Duration::from_millis(100) {
                 last_report = Instant::now();
                 self.send(DownloadEvent::Progress {
@@ -222,15 +211,12 @@ impl Job {
     }
 }
 
-/// `файл.zip` → `файл.zip.part`, как у Firefox.
 fn part_path(path: &Path) -> PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(".part");
     path.with_file_name(name)
 }
 
-/// Папка «Загрузки» пользователя.
-/// TODO(platform-win): SHGetKnownFolderPath(FOLDERID_Downloads) — папка может быть перенесена.
 pub fn default_download_dir() -> PathBuf {
     let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
         .map(PathBuf::from)
@@ -245,7 +231,6 @@ mod tests {
     use std::net::TcpListener;
     use std::sync::mpsc::channel;
 
-    /// HTTP-сервер на один запрос; возвращает адрес и полученные заголовки запроса.
     fn serve_once(response: Vec<u8>) -> (String, std::sync::mpsc::Receiver<Vec<String>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = format!("http://{}", listener.local_addr().unwrap());

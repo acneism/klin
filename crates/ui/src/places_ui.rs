@@ -1,29 +1,22 @@
-//! Интерфейс истории и закладок: подсказки адресной строки, панель закладки у звёздочки
-//! и боковая панель истории (Ctrl+H) — по образцу Firefox.
-
 use egui::{Key, Rect, RichText, Vec2};
 use klin_shared::Url;
 
 use crate::Action;
 use crate::icons::{self, Icon};
 
-/// Подсказка адресной строки.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Suggestion {
     pub url: Url,
     pub title: String,
 }
 
-/// Посещение для боковой панели истории.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HistoryItem {
     pub url: Url,
     pub title: Option<String>,
-    /// Время посещения, мс с начала эпохи Unix.
     pub visited_ms: u64,
 }
 
-/// Список подсказок под адресной строкой. Возвращает выбранную подсказку (Enter или щелчок).
 pub(crate) fn suggestions_popup(
     ctx: &egui::Context,
     anchor: Rect,
@@ -73,7 +66,6 @@ pub(crate) fn suggestions_popup(
     chosen
 }
 
-/// Панель закладки у звёздочки. Возвращает `false`, когда панель закрыта.
 pub(crate) fn bookmark_panel(
     ctx: &egui::Context,
     anchor: Rect,
@@ -92,8 +84,7 @@ pub(crate) fn bookmark_panel(
                 .inner_margin(12.0)
                 .show(ui, |ui| {
                     ui.set_width(width);
-                    // Отступление от Firefox: без полей «Имя», «Папка» и «Метки» — только
-                    // подтверждение и удаление; закладка сохраняется в «Другие закладки».
+
                     ui.label(RichText::new("Закладка добавлена").strong());
                     ui.add_space(6.0);
                     ui.add(
@@ -126,7 +117,6 @@ pub(crate) fn bookmark_panel(
     open && !pressed_outside && !ctx.input(|i| i.key_pressed(Key::Escape))
 }
 
-/// Кнопка-звёздочка: залитая, если на страницу есть закладка.
 pub(crate) fn star_button(ui: &mut egui::Ui, enabled: bool, bookmarked: bool) -> egui::Response {
     let response = icons::button(
         ui,
@@ -146,10 +136,9 @@ pub(crate) fn star_button(ui: &mut egui::Ui, enabled: bool, bookmarked: bool) ->
     response.on_hover_text(hint)
 }
 
-/// Группы истории по давности — как в боковой панели истории Firefox.
 fn group_name(visited_ms: u64, now_ms: u64) -> &'static str {
     const DAY: u64 = 24 * 60 * 60 * 1000;
-    // Начало «сегодня» считаем по UTC; TODO(platform-win): местный часовой пояс.
+
     let today_start = now_ms - now_ms % DAY;
     if visited_ms >= today_start {
         "Сегодня"
@@ -164,7 +153,6 @@ fn group_name(visited_ms: u64, now_ms: u64) -> &'static str {
     }
 }
 
-/// Боковая панель истории (Ctrl+H).
 pub(crate) fn history_sidebar(
     ui: &mut egui::Ui,
     items: &[HistoryItem],

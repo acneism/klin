@@ -1,10 +1,3 @@
-//! Интерфейс Klin на egui: вкладки, панель навигации, адресная строка, строка состояния.
-//!
-//! Крейт рисует состояние `klin_core::Browser` и возвращает действия пользователя
-//! ([`Action`]). Движок он не вызывает: действия выполняет `app` через команды ядра.
-//!
-//! Строки интерфейса пока записаны здесь; в 0.2 их заменят строки Firefox в формате Fluent.
-
 mod downloads;
 mod favicons;
 mod findbar;
@@ -22,43 +15,33 @@ use klin_shared::{LoadStatus, TabId, WindowId};
 pub use places_ui::{HistoryItem, Suggestion};
 pub use url_display::display_url;
 
-/// Что пользователь сделал в интерфейсе.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     Execute(Command),
     SelectTab(TabId),
     CloseTab(TabId),
-    /// Ввод адресной строки (Enter).
     Navigate(String),
-    /// Клик по странице: фокус ввода переходит к ней.
     FocusPage,
     CancelDownload(klin_shared::DownloadId),
     OpenDownload(std::path::PathBuf),
     ShowDownloadInFolder(std::path::PathBuf),
     ClearDownloads,
-    /// Текст адресной строки изменился: нужны подсказки.
     Suggest(String),
-    /// Выбрана подсказка адресной строки.
     NavigateSuggestion {
         query: String,
         url: klin_shared::Url,
     },
-    /// Открыть адрес в текущей вкладке (из боковой панели истории).
     OpenUrl(klin_shared::Url),
     RemoveBookmark(klin_shared::Url),
-    /// Открыть или закрыть боковую панель истории.
     ToggleHistorySidebar,
-    /// Поиск на странице.
     Find {
         tab: TabId,
         request: klin_core::FindRequest,
     },
-    /// Вкладку перетащили на позицию `index`.
     MoveTab {
         tab: TabId,
         index: usize,
     },
-    /// Ответ на запрос страницы (диалог, меню, список).
     Answer {
         tab: TabId,
         id: klin_shared::RequestId,
@@ -66,22 +49,16 @@ pub enum Action {
     },
 }
 
-/// Результат кадра интерфейса.
 pub struct Frame {
     pub actions: Vec<Action>,
-    /// Область страницы в точках egui.
     pub page_rect: Rect,
-    /// Фокус клавиатуры у интерфейса (адресная строка, диалог), а не у страницы.
     pub ui_has_focus: bool,
-    /// Страница не получает ввод: открыт диалог, меню или список.
     pub page_blocked: bool,
 }
 
-/// Состояние интерфейса одного окна.
 #[derive(Default)]
 pub struct BrowserUi {
     url_text: String,
-    /// Пользователь редактирует адрес: не перезаписывать его адресом страницы.
     editing: bool,
     focus_url_bar: bool,
     shown_tab: Option<TabId>,
@@ -104,20 +81,18 @@ pub struct BrowserUi {
 fn url_bar_id() -> egui::Id {
     egui::Id::new("klin-url-bar")
 }
-const TAB_MIN_WIDTH: f32 = 76.0; // как min-width вкладки в Firefox
-const TAB_MAX_WIDTH: f32 = 225.0; // как max-width вкладки в Firefox
+const TAB_MIN_WIDTH: f32 = 76.0;
+const TAB_MAX_WIDTH: f32 = 225.0;
 
 impl BrowserUi {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Поставить фокус в адресную строку и выделить адрес (Ctrl+L, Alt+D, F6, новая вкладка).
     pub fn focus_url_bar(&mut self) {
         self.focus_url_bar = true;
     }
 
-    /// Подсказки для введённого текста. Устаревшие ответы (текст уже другой) отбрасываются.
     pub fn set_suggestions(&mut self, query: &str, items: Vec<Suggestion>) {
         if self.editing && self.url_text.trim() == query {
             self.suggestions = items;
@@ -126,22 +101,18 @@ impl BrowserUi {
         }
     }
 
-    /// Открыть панель поиска во вкладке (Ctrl+F).
     pub fn show_find_bar(&mut self, tab: TabId) {
         self.find_bars.open(tab);
     }
 
-    /// F3 / Shift+F3. Возвращает действие поиска, если запрос уже есть.
     pub fn find_again(&mut self, tab: TabId, backwards: bool) -> Option<Action> {
         self.find_bars.again(tab, backwards)
     }
 
-    /// Показать панель закладки у звёздочки.
     pub fn show_bookmark_panel(&mut self) {
         self.bookmark_panel_open = true;
     }
 
-    /// Открыть или закрыть боковую панель истории. Возвращает новое состояние.
     pub fn toggle_history(&mut self) -> bool {
         self.history_open = !self.history_open;
         self.history_open
@@ -155,18 +126,14 @@ impl BrowserUi {
         self.history = items;
     }
 
-    /// Открыть или закрыть панель загрузок (кнопка, Ctrl+J).
     pub fn toggle_downloads(&mut self) {
         self.downloads_open = !self.downloads_open;
     }
 
-    /// Открыть панель загрузок (при начале загрузки — `browser.download.alwaysOpenPanel`).
     pub fn open_downloads(&mut self) {
         self.downloads_open = true;
     }
 
-    /// Нарисовать окно внутри корневого `Ui` (из `Context::run_ui`).
-    /// `paint_page` рисует страницу в отведённой ей области.
     pub fn show(
         &mut self,
         root: &mut egui::Ui,
@@ -248,8 +215,6 @@ impl BrowserUi {
             self.bookmark_panel_open = false;
         }
 
-        // Панель может быть запрошена раньше, чем появится кнопка (загрузка ещё не началась):
-        // тогда флаг ждёт кнопку.
         if let (Some(anchor), true) = (self.downloads_button, self.downloads_open) {
             self.downloads_open = downloads::panel(&ctx, anchor, browser.downloads(), &mut actions);
         }
@@ -273,7 +238,6 @@ impl BrowserUi {
         }
     }
 
-    /// Адресная строка показывает адрес выбранной вкладки, пока пользователь его не правит.
     fn sync_url(&mut self, tab: Option<&Tab>) {
         let id = tab.map(|t| t.id);
         if id != self.shown_tab {
@@ -305,7 +269,6 @@ impl BrowserUi {
             .filter_map(|t| browser.tab(*t))
             .any(|t| t.load_status != LoadStatus::Complete)
         {
-            // Индикатор загрузки анимирован; 20 кадров в секунду достаточно.
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(50));
         }
@@ -332,8 +295,7 @@ impl BrowserUi {
                             }
                             rects.push((tab_id, rect));
                         }
-                        // Перетаскивание: вкладка встаёт перед первой вкладкой, чей центр правее
-                        // указателя, и переезжает сразу, как в Firefox.
+
                         if let (Some((tab, from)), Some(pointer)) =
                             (dragged, ui.ctx().pointer_interact_pos())
                         {
@@ -464,7 +426,7 @@ impl BrowserUi {
                 actions.push(Action::Suggest(query));
             }
         }
-        // Подсказки видны, пока пользователь правит адрес и текст не менялся с запроса.
+
         let show = response.has_focus() || response.lost_focus();
         let current = self.suggestions_query == self.url_text.trim();
         if self.editing && show && current {
@@ -497,7 +459,6 @@ impl BrowserUi {
                 self.editing = false;
                 self.suggestions.clear();
             } else if ui.input(|i| i.key_pressed(Key::Escape)) {
-                // Esc в адресной строке возвращает адрес страницы, как в Firefox.
                 self.editing = false;
                 self.suggestions.clear();
             }
@@ -529,7 +490,7 @@ fn tab_button(
 ) -> (Rect, bool) {
     let title = tab_title(tab);
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 30.0), Sense::hover());
-    // Id по вкладке, а не по месту в ряду: иначе перетаскивание обрывается, когда вкладка переезжает.
+
     let response = ui.interact(
         rect,
         egui::Id::new(("klin-tab", tab.id)),
@@ -564,7 +525,6 @@ fn tab_button(
         visuals.text_color(),
     );
 
-    // Значок: при загрузке — индикатор, без значка — значок по умолчанию, как в Firefox.
     let icon_rect = Rect::from_min_size(
         egui::pos2(rect.left() + 10.0, rect.center().y - 8.0),
         Vec2::splat(16.0),
@@ -585,7 +545,6 @@ fn tab_button(
         );
     }
 
-    // Заголовок рисуем сами: виджет-надпись занял бы место в ряду ещё раз.
     let text_left = icon_rect.right() + 7.0;
     let text_width = (close_rect.left() - 4.0 - text_left).max(0.0);
     let label = title.clone();
@@ -602,15 +561,12 @@ fn tab_button(
     ui.painter().with_clip_rect(rect).galley(pos, galley, color);
 
     if close.clicked() || response.middle_clicked() {
-        // Средняя кнопка мыши закрывает вкладку, как в Firefox.
         actions.push(Action::CloseTab(tab.id));
     } else if !selected
         && !close.contains_pointer()
         && response.contains_pointer()
         && ui.input(|i| i.pointer.primary_pressed())
     {
-        // Firefox выбирает вкладку уже по нажатию кнопки, поэтому перетаскиваемая
-        // вкладка становится выбранной; кнопка закрытия фоновую вкладку не выбирает.
         actions.push(Action::SelectTab(tab.id));
     }
     let dragged = response.dragged();
@@ -622,7 +578,6 @@ fn tab_button(
     (rect, dragged)
 }
 
-/// Заголовок вкладки: заголовок страницы, иначе адрес, иначе «Новая вкладка».
 fn tab_title(tab: &Tab) -> String {
     let title = tab.title.trim();
     if !title.is_empty() {
@@ -634,7 +589,6 @@ fn tab_title(tab: &Tab) -> String {
     }
 }
 
-/// Адрес ссылки под курсором в левом нижнем углу страницы.
 fn status_panel(ui: &egui::Ui, page: Rect, text: &str) {
     let font = egui::FontId::proportional(12.0);
     let galley = ui
@@ -651,7 +605,6 @@ fn status_panel(ui: &egui::Ui, page: Rect, text: &str) {
     );
 }
 
-/// Страница сбоя вкладки — по образцу about:tabcrashed в Firefox.
 fn crash_page(ui: &mut egui::Ui, reason: &str, actions: &mut Vec<Action>) {
     ui.vertical_centered(|ui| {
         ui.add_space(ui.available_height() / 3.0);

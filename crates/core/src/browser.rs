@@ -1,5 +1,3 @@
-//! Модель окон и вкладок и правила её изменения.
-
 use std::collections::HashMap;
 
 use klin_shared::{Disposition, Image, LoadStatus, TabId, Url, WindowId};
@@ -16,35 +14,21 @@ pub struct Tab {
     pub window: WindowId,
     pub url: Option<Url>,
     pub title: String,
-    /// Значок сайта. `Arc`: интерфейс узнаёт смену значка по указателю, не сравнивая пиксели.
     pub favicon: Option<std::sync::Arc<Image>>,
     pub status_text: Option<String>,
     pub load_status: LoadStatus,
     pub can_back: bool,
     pub can_forward: bool,
     pub zoom: f32,
-    /// Вкладка, из которой открыта эта (для `browser.tabs.selectOwnerOnClose`
-    /// и `browser.tabs.insertRelatedAfterCurrent`).
     pub opener: Option<TabId>,
-    /// Причина сбоя: вкладка показывает страницу сбоя с кнопкой «Перезагрузить».
     pub crashed: Option<String>,
-    /// Есть ли закладка на текущий адрес (`None` — ещё не известно).
     pub bookmarked: Option<bool>,
-    /// Как начат текущий переход — тип посещения для истории.
     pub next_visit: Option<VisitKind>,
-    /// История переходов (адреса) и текущая позиция в ней — для файла сессии.
     pub history: Vec<Url>,
     pub history_index: usize,
-    /// У вкладки есть страница в движке. Восстановленные вкладки создаются без неё
-    /// и загружаются при первом выборе (`browser.sessionstore.restore_on_demand`).
     pub loaded: bool,
-    /// Последний результат поиска на странице.
     pub find_result: Option<crate::engine::FindResult>,
-    /// Движок уже сообщил адрес документа. До этого `url` — только запрошенный адрес,
-    /// и первый `UrlChanged` с тем же адресом — это настоящее посещение.
     pub committed: bool,
-    /// Запросы страницы в порядке поступления (диалоги, разрешения, меню).
-    /// Как в Firefox, диалог привязан к вкладке: при переключении вкладок он не теряется.
     pub requests: Vec<PageRequest>,
 }
 
@@ -63,89 +47,69 @@ impl Window {
     }
 }
 
-/// Запись для «Восстановить закрытую вкладку». Firefox восстанавливает и историю сессии
-/// вкладки; это придёт вместе с sessionstore в 0.2.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ClosedTab {
     pub index: usize,
     pub url: Option<Url>,
     pub title: String,
-    /// История переходов вкладки на момент закрытия.
     pub history: Vec<Url>,
     pub history_index: usize,
-    /// Время закрытия, мс с начала эпохи Unix.
     pub closed_at_ms: u64,
 }
 
-/// Тип посещения для истории — как переходы (transition) в Firefox.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VisitKind {
     Link,
-    /// Адрес введён или выбран в адресной строке.
     Typed,
     Bookmark,
     Reload,
 }
 
-/// Что интерфейс должен сделать в ответ на команду или событие.
 #[derive(Clone, Debug, PartialEq)]
 pub enum UiEffect {
-    /// Нужно новое окно: интерфейс создаёт окно ОС и вызывает [`Browser::open_window`].
     OpenWindow {
         private: bool,
         url: Option<Url>,
     },
     WindowClosed(WindowId),
     FocusUrlBar(WindowId),
-    /// У вкладки появился запрос, который интерфейс не рисует сам (выбор файла).
     NativeRequest {
         tab: TabId,
         request: Box<PageRequest>,
     },
     Redraw(TabId),
-    /// Начать загрузку файла (ответ на [`EngineEvent::DownloadRequested`]).
     StartDownload {
         window: WindowId,
         url: Url,
         referrer: Option<Url>,
     },
-    /// Открыть или закрыть панель загрузок (Ctrl+J).
     ToggleDownloadsPanel(WindowId),
-    /// Записать посещение в историю.
     RecordVisit {
         url: Url,
         kind: VisitKind,
         referrer: Option<Url>,
     },
-    /// Записать заголовок страницы в историю.
     RecordTitle {
         url: Url,
         title: String,
     },
-    /// Узнать, есть ли закладка на адрес (ответ — [`Browser::set_bookmarked`]).
     QueryBookmark(Url),
     AddBookmark {
         url: Url,
         title: Option<String>,
     },
     RemoveBookmark(Url),
-    /// Показать панель закладки у звёздочки (как «Изменить закладку» в Firefox).
     ShowBookmarkPanel(WindowId),
-    /// Открыть панель поиска и поставить фокус в поле (Ctrl+F).
     ShowFindBar(WindowId),
-    /// Следующее или предыдущее совпадение (F3, Shift+F3); без запроса — открыть панель.
     FindAgain {
         window: WindowId,
         backwards: bool,
     },
-    /// Открыть или закрыть боковую панель истории (Ctrl+H).
     ToggleHistorySidebar(WindowId),
-    /// Масштаб сайта изменился и должен быть сохранён (`None` — сброшен к 100 %).
     SiteZoomChanged {
         site: String,
         zoom: Option<f32>,
     },
-    /// Команда ещё не реализована в этой версии.
     NotImplemented(Command),
 }
 
@@ -185,12 +149,10 @@ impl Browser {
             .and_then(|t| self.tabs.get(&t))
     }
 
-    /// Загрузки этого сеанса, новые — в конце.
     pub fn downloads(&self) -> &[klin_shared::download::Download] {
         &self.downloads
     }
 
-    /// Применить сообщение службы загрузок.
     pub fn download_event(&mut self, event: klin_shared::download::DownloadEvent) {
         use klin_shared::download::{Download, DownloadEvent as E, DownloadState as S};
         fn find(downloads: &mut [Download], id: klin_shared::DownloadId) -> Option<&mut Download> {
@@ -235,7 +197,6 @@ impl Browser {
         }
     }
 
-    /// Убрать из списка завершённые, отменённые и неудачные загрузки.
     pub fn clear_downloads(&mut self) {
         self.downloads.retain(|d| {
             matches!(
@@ -249,8 +210,6 @@ impl Browser {
         &self.search
     }
 
-    /// Новое окно с одной вкладкой. Идентификатор выдаёт вызывающий: окно ОС и поверхность
-    /// движка для него должны существовать до того, как в окне появится первая вкладка.
     pub fn open_window(
         &mut self,
         engine: &mut dyn Engine,
@@ -270,8 +229,6 @@ impl Browser {
         id
     }
 
-    /// Открыть вкладку. `opener` — вкладка-источник (ссылка, window.open): такая вкладка
-    /// встаёт после текущей и её «родственников», остальные — в конец, как в Firefox.
     pub fn open_tab(
         &mut self,
         engine: &mut dyn Engine,
@@ -382,7 +339,6 @@ impl Browser {
         engine.set_visible(new, true);
     }
 
-    /// Загрузить отложенную (восстановленную) вкладку.
     fn ensure_loaded(&mut self, engine: &mut dyn Engine, tab: TabId) {
         let private = self.is_private_tab(tab);
         let Some(t) = self.tabs.get_mut(&tab) else {
@@ -417,7 +373,6 @@ impl Browser {
         }
     }
 
-    /// Перетащить вкладку на позицию `index` в её окне. Выбранная вкладка остаётся выбранной.
     pub fn move_tab(&mut self, tab: TabId, index: usize) {
         let Some(window) = self.tabs.get(&tab).map(|t| t.window) else {
             return;
@@ -437,7 +392,6 @@ impl Browser {
         }
     }
 
-    /// Закрыть вкладку. Возвращает эффекты (например, закрытие окна с последней вкладкой).
     pub fn close_tab(&mut self, engine: &mut dyn Engine, tab: TabId) -> Vec<UiEffect> {
         let Some(closed) = self.tabs.remove(&tab) else {
             return Vec::new();
@@ -475,13 +429,11 @@ impl Browser {
             return Vec::new();
         }
         if was_selected {
-            // `browser.tabs.selectOwnerOnClose`: вернуться к вкладке-источнику, если она в этом окне.
-            // Отступление от Firefox: не проверяем, переключался ли пользователь после открытия.
             let owner = closed
                 .opener
                 .and_then(|o| win.tabs.iter().position(|&t| t == o));
             let next = owner.unwrap_or(index.min(win.tabs.len() - 1));
-            win.selected = usize::MAX; // старой вкладки уже нет, скрывать нечего
+            win.selected = usize::MAX;
             let id = win.id;
             self.select_index(engine, id, next);
         } else if index < win.selected {
@@ -506,7 +458,7 @@ impl Browser {
         let closed = self.window_mut(window)?.closed_tabs.pop()?;
         let url = closed.url.unwrap_or_else(new_tab_url);
         let tab = self.open_tab(engine, window, url, None, true)?;
-        // Вернуть на прежнее место.
+
         let win = self.window_mut(window)?;
         let current = win.tabs.iter().position(|&t| t == tab)?;
         let target = closed.index.min(win.tabs.len() - 1);
@@ -516,7 +468,6 @@ impl Browser {
         Some(tab)
     }
 
-    /// Ответить на запрос страницы.
     pub fn answer(
         &mut self,
         engine: &mut dyn Engine,
@@ -534,7 +485,6 @@ impl Browser {
         }
     }
 
-    /// Ввод адресной строки: адрес или поиск.
     pub fn load_input(&mut self, engine: &mut dyn Engine, window: WindowId, input: &str) {
         let Some(url) = urifixup::to_url(input, &self.search) else {
             return;
@@ -547,7 +497,6 @@ impl Browser {
         }
     }
 
-    /// Открыть адрес во вкладке как переход из закладки или списка истории.
     pub fn open_url(
         &mut self,
         engine: &mut dyn Engine,
@@ -563,7 +512,6 @@ impl Browser {
         }
     }
 
-    /// Искать на странице во вкладке. При закрытии панели — [`FindDirection::Clear`].
     pub fn find(
         &mut self,
         engine: &mut dyn Engine,
@@ -580,7 +528,6 @@ impl Browser {
         }
     }
 
-    /// Ответ хранилища: есть ли закладка на адрес. Обновляет все вкладки с этим адресом.
     pub fn set_bookmarked(&mut self, url: &Url, bookmarked: bool) {
         for tab in self.tabs.values_mut() {
             if tab.url.as_ref() == Some(url) {
@@ -596,7 +543,6 @@ impl Browser {
             .is_some_and(|w| w.private)
     }
 
-    /// Выполнить команду в окне.
     pub fn execute(
         &mut self,
         engine: &mut dyn Engine,
@@ -637,7 +583,6 @@ impl Browser {
             SelectTab(n) => self.select_index(engine, window, usize::from(n)),
             SelectLastTab if count > 0 => self.select_index(engine, window, count - 1),
             FocusUrlBar => return vec![UiEffect::FocusUrlBar(window)],
-            // Отступление от Firefox: Ctrl+J открывает панель загрузок, а не окно «Библиотека».
             ShowDownloads => return vec![UiEffect::ToggleDownloadsPanel(window)],
             Back | Forward | Reload | ReloadSkipCache | Stop | Home | ZoomIn | ZoomOut
             | ZoomReset => {
@@ -661,8 +606,6 @@ impl Browser {
                 }];
             }
             Bookmark => {
-                // Как Ctrl+D и звёздочка в Firefox: новая закладка создаётся сразу, затем
-                // открывается панель закладки; для уже существующей — только панель.
                 let Some(t) = selected.and_then(|id| self.tabs.get_mut(&id)) else {
                     return Vec::new();
                 };
@@ -709,8 +652,7 @@ impl Browser {
             ReloadSkipCache => engine.reload(tab, true),
             Stop => {
                 engine.stop(tab);
-                // Прерванный документ не присылает `load`: вкладка считается загруженной,
-                // иначе индикатор загрузки крутился бы бесконечно.
+
                 if let Some(t) = self.tabs.get_mut(&tab) {
                     t.load_status = LoadStatus::Complete;
                 }
@@ -735,7 +677,6 @@ impl Browser {
                 let window = t.window;
                 let private = self.window(window).is_some_and(|w| w.private);
                 if let (true, Some(site)) = (prefs::ZOOM_SITE_SPECIFIC, site) {
-                    // Как в Firefox: масштаб сайта меняется во всех его вкладках.
                     for other in self.tabs.values_mut() {
                         if other.id != tab
                             && other.url.as_ref().and_then(host) == Some(site.as_str())
@@ -745,7 +686,7 @@ impl Browser {
                         }
                     }
                     self.site_zoom.set(&site, new);
-                    // Масштаб из приватного окна на диск не пишется.
+
                     if !private {
                         let zoom = (new != 1.0).then_some(new);
                         return vec![UiEffect::SiteZoomChanged { site, zoom }];
@@ -757,8 +698,6 @@ impl Browser {
         Vec::new()
     }
 
-    /// Загрузить сохранённый масштаб сайтов (из content-prefs) и применить к открытым вкладкам,
-    /// где масштаб ещё не меняли.
     pub fn load_site_zoom(
         &mut self,
         engine: &mut dyn Engine,
@@ -775,13 +714,12 @@ impl Browser {
         }
     }
 
-    /// Применить событие движка к модели.
     pub fn handle_event(&mut self, engine: &mut dyn Engine, event: EngineEvent) -> Vec<UiEffect> {
         match event {
             EngineEvent::LoadStatus { tab, status } => {
                 if let Some(t) = self.tabs.get_mut(&tab) {
                     t.load_status = status;
-                    // Новый документ: значок прежней страницы больше не относится к вкладке.
+
                     if status == LoadStatus::Started {
                         t.favicon = None;
                     }
@@ -813,7 +751,7 @@ impl Browser {
                     if !same_page {
                         effects.push(UiEffect::QueryBookmark(url.clone()));
                     }
-                    // Приватные окна в историю не пишутся, как в Firefox.
+
                     if !self.is_private_tab(tab) && (!same_page || kind == VisitKind::Reload) {
                         effects.push(UiEffect::RecordVisit {
                             url,
@@ -869,8 +807,6 @@ impl Browser {
                 };
                 match disposition {
                     Disposition::NewWindow => {
-                        // Отступление от Firefox (временное): окно из window.open пока открывается
-                        // с новой WebView, без связи с opener.
                         if let Some(tab) = created {
                             engine.close_tab(tab);
                         }
@@ -895,8 +831,6 @@ impl Browser {
                 };
                 let request = PageRequest { id, kind };
                 if matches!(request.kind, crate::RequestKind::FilePicker { .. }) {
-                    // Системный диалог выбора файла рисует app; запрос держим во вкладке,
-                    // чтобы страница была заблокирована, пока диалог открыт.
                     t.requests.push(request.clone());
                     return vec![UiEffect::NativeRequest {
                         tab,
@@ -920,8 +854,6 @@ impl Browser {
                 return vec![UiEffect::Redraw(tab)];
             }
             EngineEvent::DownloadRequested { tab, url, referrer } => {
-                // Переход отменён движком: вкладка остаётся на прежней странице. Если это была
-                // новая пустая вкладка, открытая только ради файла, Firefox её закрывает.
                 let Some(t) = self.tabs.get_mut(&tab) else {
                     return Vec::new();
                 };
@@ -938,7 +870,6 @@ impl Browser {
                 return effects;
             }
             EngineEvent::Closed { tab } => {
-                // window.close() из страницы.
                 if self.tabs.contains_key(&tab) {
                     return self.close_tab(engine, tab);
                 }
@@ -955,8 +886,6 @@ impl Browser {
     }
 }
 
-/// Адреса, которые попадают в историю и закладки: веб-страницы и файлы, но не внутренние
-/// about:-страницы (Firefox их тоже не хранит).
 fn is_bookmarkable(url: &Url) -> bool {
     matches!(url.scheme(), "http" | "https" | "file")
 }
@@ -1055,7 +984,7 @@ mod tests {
             tab_urls(&b, w),
             ["https://a.example/", "https://c.example/"]
         );
-        // После закрытия выбирается вкладка справа.
+
         assert_eq!(
             b.selected_tab(w).unwrap().url.as_ref().unwrap().as_str(),
             "https://c.example/"
@@ -1168,13 +1097,13 @@ mod tests {
         b.execute(&mut e, w, Command::ZoomIn);
         let first = b.window(w).unwrap().tabs[0];
         assert_eq!(b.tab(first).unwrap().zoom, 1.2);
-        // Новая вкладка на том же сайте получает тот же масштаб.
+
         let second = b
             .open_tab(&mut e, w, url("https://a.example/other"), None, true)
             .unwrap();
         assert_eq!(b.tab(second).unwrap().zoom, 1.2);
         assert!(e.calls.contains(&Call::SetZoom(second, 1.2)));
-        // Изменение сохраняется и применяется ко всем вкладкам сайта.
+
         let effects = b.execute(&mut e, w, Command::ZoomOut);
         assert_eq!(
             effects,
@@ -1184,7 +1113,7 @@ mod tests {
             }]
         );
         assert_eq!(b.tab(first).unwrap().zoom, 1.1);
-        // Переход на другой сайт сбрасывает масштаб.
+
         b.handle_event(
             &mut e,
             EngineEvent::UrlChanged {
@@ -1271,7 +1200,7 @@ mod tests {
         b.answer(&mut e, tab, id, Reply::Ok);
         assert!(b.tab(tab).unwrap().requests.is_empty());
         assert_eq!(e.calls.last(), Some(&Call::Answer(id, Reply::Ok)));
-        // Повторный ответ движку не уходит.
+
         let calls = e.calls.len();
         b.answer(&mut e, tab, id, Reply::Ok);
         assert_eq!(e.calls.len(), calls);
@@ -1407,7 +1336,7 @@ mod tests {
                 title: "Servo".into()
             }]
         );
-        // Следующий переход по ссылке — уже Link.
+
         let effects = b.handle_event(
             &mut e,
             EngineEvent::UrlChanged {
@@ -1441,7 +1370,7 @@ mod tests {
                 .any(|e| matches!(e, UiEffect::RecordVisit { .. }))
         );
         assert!(effects.contains(&UiEffect::QueryBookmark(url("https://a.example/"))));
-        // Повтор того же адреса (например, якорь не менялся) — уже не посещение.
+
         let effects = b.handle_event(
             &mut e,
             EngineEvent::UrlChanged {

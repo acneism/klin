@@ -1,12 +1,7 @@
-//! Имена загруженных файлов — по образцу `DownloadPaths.sys.mjs` из Firefox:
-//! имя из `Content-Disposition` (RFC 6266) или из адреса, недопустимые символы заменяются,
-//! при совпадении добавляется `(1)`, `(2)`…
-
 use std::path::{Path, PathBuf};
 
 use url::Url;
 
-/// Имя из `Content-Disposition`; `filename*` (RFC 5987) важнее `filename`.
 pub fn file_name_from_content_disposition(header: &str) -> Option<String> {
     let mut plain = None;
     let mut extended = None;
@@ -18,7 +13,6 @@ pub fn file_name_from_content_disposition(header: &str) -> Option<String> {
         let value = value.trim();
         match key.as_str() {
             "filename*" => {
-                // charset'lang'percent-encoded
                 let mut pieces = value.splitn(3, '\'');
                 let charset = pieces.next().unwrap_or("").to_ascii_lowercase();
                 let _lang = pieces.next();
@@ -44,7 +38,6 @@ pub fn file_name_from_content_disposition(header: &str) -> Option<String> {
     extended.or(plain).filter(|n| !n.trim().is_empty())
 }
 
-/// Имя из последнего сегмента пути; без него — имя хоста, как делает Firefox.
 pub fn file_name_from_url(url: &Url) -> String {
     let last = url
         .path_segments()
@@ -61,8 +54,6 @@ pub fn file_name_from_url(url: &Url) -> String {
     }
 }
 
-/// Безопасное имя файла для Windows: без `<>:"/\|?*` и управляющих символов,
-/// без точек и пробелов по краям, не зарезервированное устройство (`CON`, `NUL`…).
 pub fn sanitize(name: &str) -> String {
     let replaced: String = name
         .chars()
@@ -88,20 +79,19 @@ pub fn sanitize(name: &str) -> String {
     if RESERVED.contains(&stem.as_str()) {
         name.insert(0, '_');
     }
-    // Ограничение длины имени в NTFS — 255 символов.
+
     if name.chars().count() > 240 {
         name = name.chars().take(240).collect();
     }
     name
 }
 
-/// Свободный путь в `dir`: `имя.ext`, затем `имя(1).ext`, `имя(2).ext`…
 pub fn unique_path(dir: &Path, name: &str) -> PathBuf {
     let candidate = dir.join(name);
     if !candidate.exists() {
         return candidate;
     }
-    // Двойные расширения (.tar.gz) сохраняются целиком, как в Firefox.
+
     let (stem, ext) = match name.find(".tar.") {
         Some(i) => (&name[..i], &name[i..]),
         None => match name.rfind('.') {

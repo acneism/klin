@@ -1,6 +1,3 @@
-//! Текстуры значков сайтов для вкладок. Значок загружается в GPU один раз и обновляется,
-//! когда у вкладки появляется другой `Arc<Image>`.
-
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -13,7 +10,6 @@ pub(crate) struct Favicons {
     cache: HashMap<TabId, (Arc<Image>, TextureHandle)>,
 }
 
-/// Значки бывают и 16×16, и 256×256: mip-уровни дают чистое уменьшение до размера вкладки.
 const OPTIONS: TextureOptions = TextureOptions {
     magnification: TextureFilter::Linear,
     minification: TextureFilter::Linear,
@@ -43,7 +39,6 @@ impl Favicons {
         Some(id)
     }
 
-    /// Освободить текстуры закрытых вкладок.
     pub fn retain(&mut self, live: impl Fn(TabId) -> bool) {
         self.cache.retain(|tab, _| live(*tab));
     }

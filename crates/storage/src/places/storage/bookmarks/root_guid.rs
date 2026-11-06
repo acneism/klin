@@ -12,8 +12,6 @@ pub const USER_CONTENT_ROOTS: &[BookmarkRootGuid] = &[
     BookmarkRootGuid::Mobile,
 ];
 
-/// Special GUIDs associated with bookmark roots.
-/// It's guaranteed that the roots will always have these guids.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Hash)]
 #[repr(u8)]
 pub enum BookmarkRootGuid {
@@ -86,7 +84,6 @@ impl From<BookmarkRootGuid> for SyncGuid {
     }
 }
 
-// Allow comparisons between BookmarkRootGuid and SyncGuids
 impl PartialEq<BookmarkRootGuid> for SyncGuid {
     fn eq(&self, other: &BookmarkRootGuid) -> bool {
         self.as_str().as_bytes() == other.as_str().as_bytes()
@@ -99,7 +96,6 @@ impl PartialEq<SyncGuid> for BookmarkRootGuid {
     }
 }
 
-// Even if we have a reference to &SyncGuid
 impl PartialEq<BookmarkRootGuid> for &SyncGuid {
     fn eq(&self, other: &BookmarkRootGuid) -> bool {
         self.as_str().as_bytes() == other.as_str().as_bytes()
@@ -112,7 +108,6 @@ impl<'a> PartialEq<&'a SyncGuid> for BookmarkRootGuid {
     }
 }
 
-// And between BookmarkRootGuid and &str
 impl PartialEq<BookmarkRootGuid> for &str {
     fn eq(&self, other: &BookmarkRootGuid) -> bool {
         *self == other.as_str()

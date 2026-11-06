@@ -2,14 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/// This module supplies utilities to help with debugging SQL in these components.
-///
-/// To take advantage of this module, you must enable the `debug-tools` feature for
-/// this crate.
 use rusqlite::{Connection, functions::Context, types::Value};
 
-/// Print the entire contents of an arbitrary query. A common usage would be to pass
-/// `SELECT * FROM table`
 #[cfg(feature = "debug-tools")]
 pub fn print_query(conn: &Connection, query: &str) -> rusqlite::Result<()> {
     use text_table::{Row, Table};
@@ -36,7 +30,7 @@ pub fn print_query(conn: &Connection, query: &str) -> rusqlite::Result<()> {
         }
         table.add_row(table_row);
     }
-    // printstd ends up on stdout - if we just println!() extra buffering seems to happen?
+
     use std::io::Write;
     std::io::stdout()
         .write_all(format!("query: {query}\n").as_bytes())
@@ -63,9 +57,6 @@ fn dbg(ctx: &Context<'_>) -> rusqlite::Result<Value> {
 }
 
 #[cfg(not(feature = "debug-tools"))]
-// It would be very bad if the `dbg()` function only existed when the `debug-tools` feature was
-// enabled - you could imagine some crate defining it as a `dev-dependency`, but then shipping
-// sql with an embedded `dbg()` call - tests and CI would pass, but it would fail in the real lib.
 fn dbg(ctx: &Context<'_>) -> rusqlite::Result<Value> {
     Ok(if ctx.is_empty() {
         Value::Null
@@ -74,27 +65,6 @@ fn dbg(ctx: &Context<'_>) -> rusqlite::Result<Value> {
     })
 }
 
-/// You can call this function to add all sql functions provided by this module
-/// to your connection. The list of supported functions is described below.
-///
-/// *Note:* you must enable the `debug-tools` feature for these functions to perform
-/// as described. If this feature is not enabled, functions of the same name will still
-/// exist, but will be no-ops.
-///
-/// # dbg
-/// `dbg()` is a simple sql function that prints all args to stderr and returns the last argument.
-/// It's useful for instrumenting existing WHERE statements - eg, changing a statement
-/// ```sql
-/// WHERE a.bar = foo
-/// ```
-/// to
-/// ```sql
-/// WHERE dbg("a bar", a.bar) = foo
-/// ```
-/// will print the *literal* `a bar` followed by the *value* of `a.bar`, then return `a.bar`,
-/// so the semantics of the `WHERE` statement do not change.
-/// If you have a series of statements being executed (ie, statements separated by a `;`),
-/// adding a new statement like `SELECT dbg("hello");` is also possible.
 pub fn define_debug_functions(c: &Connection) -> rusqlite::Result<()> {
     use rusqlite::functions::FunctionFlags;
     c.create_scalar_function("dbg", -1, FunctionFlags::SQLITE_UTF8, dbg)?;

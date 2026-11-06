@@ -4,7 +4,6 @@
 
 #![allow(unknown_lints)]
 #![warn(rust_2018_idioms)]
-// (It's tempting to avoid the utf8 checks, but they're easy to get wrong, so)
 #![deny(unsafe_code)]
 mod serde_support;
 
@@ -19,59 +18,26 @@ use std::{
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 
-/// This is a type intended to be used to represent the guids used by sync. It
-/// has several benefits over using a `String`:
-///
-/// 1. It's more explicit about what is being stored, and could prevent bugs
-///    where a Guid is passed to a function expecting text.
-///
-/// 2. Guids are guaranteed to be immutable.
-///
-/// 3. It's optimized for the guids commonly used by sync. In particular, short guids
-///    (including the guids which would meet `PlacesUtils.isValidGuid`) do not incur
-///    any heap allocation, and are stored inline.
 #[derive(Clone)]
 pub struct Guid(Repr);
 
-// The internal representation of a GUID. Most Sync GUIDs are 12 bytes,
-// and contain only base64url characters; we can store them on the stack
-// without a heap allocation. However, arbitrary ascii guids of up to length 64
-// are possible, in which case we fall back to a heap-allocated string.
-//
-// This is separate only because making `Guid` an enum would expose the
-// internals.
 #[derive(Clone)]
 enum Repr {
-    // see FastGuid for invariants
     Fast(FastGuid),
-
-    // invariants:
-    // - _0.len() > MAX_FAST_GUID_LEN
     Slow(String),
 }
 
-/// Invariants:
-///
-/// - `len <= MAX_FAST_GUID_LEN`.
-/// - `data[0..len]` encodes valid utf8.
-/// - `data[len..].iter().all(|&b| b == b'\0')`
-///
-/// Note: None of these are required for memory safety, just correctness.
 #[derive(Clone)]
 struct FastGuid {
     len: u8,
     data: [u8; MAX_FAST_GUID_LEN],
 }
 
-// This is the maximum length (experimentally determined) we can make it before
-// `Repr::Fast` is larger than `Guid::Slow` on 32 bit systems. The important
-// thing is really that it's not too big, and is above 12 bytes.
 const MAX_FAST_GUID_LEN: usize = 14;
 
 impl FastGuid {
     #[inline]
     fn from_slice(bytes: &[u8]) -> Self {
-        // Checked by the caller, so debug_assert is fine.
         debug_assert!(
             can_use_fast(bytes),
             "Bug: Caller failed to check can_use_fast: {:?}",
@@ -87,7 +53,6 @@ impl FastGuid {
 
     #[inline]
     fn as_str(&self) -> &str {
-        // Note: we only use debug_assert! to ensure valid utf8-ness, so this need
         str::from_utf8(self.bytes()).expect("Invalid fast guid bytes!")
     }
 
@@ -102,26 +67,20 @@ impl FastGuid {
     }
 }
 
-// Returns:
-// - true to use Repr::Fast
-// - false to use Repr::Slow
 #[inline]
 fn can_use_fast<T: ?Sized + AsRef<[u8]>>(bytes: &T) -> bool {
     let bytes = bytes.as_ref();
-    // This is fine as a debug_assert since we'll still panic if it's ever used
-    // in such a way where it would matter.
+
     debug_assert!(str::from_utf8(bytes).is_ok());
     bytes.len() <= MAX_FAST_GUID_LEN
 }
 
 impl Guid {
-    /// Create a guid from a `str`.
     #[inline]
     pub fn new(s: &str) -> Self {
         Guid::from_slice(s.as_ref())
     }
 
-    /// Create an empty guid. Usable as a constant.
     #[inline]
     pub const fn empty() -> Self {
         Guid(Repr::Fast(FastGuid {
@@ -130,13 +89,9 @@ impl Guid {
         }))
     }
 
-    /// Create a random guid (of 12 base64url characters). Requires the `random`
-    /// feature.
     pub fn random() -> Self {
         let bytes: [u8; 9] = rand::random();
 
-        // Note: only first 12 bytes are used, but remaining are required to
-        // build the FastGuid
         let mut output = [0u8; MAX_FAST_GUID_LEN];
 
         let bytes_written = URL_SAFE_NO_PAD
@@ -151,13 +106,11 @@ impl Guid {
         }))
     }
 
-    /// Convert `b` into a `Guid`.
     #[inline]
     pub fn from_string(s: String) -> Self {
         Guid::from_vec(s.into_bytes())
     }
 
-    /// Convert `b` into a `Guid`.
     #[inline]
     pub fn from_slice(b: &[u8]) -> Self {
         if can_use_fast(b) {
@@ -167,7 +120,6 @@ impl Guid {
         }
     }
 
-    /// Convert `v` to a `Guid`, consuming it.
     #[inline]
     pub fn from_vec(v: Vec<u8>) -> Self {
         if can_use_fast(&v) {
@@ -177,7 +129,6 @@ impl Guid {
         }
     }
 
-    /// Get the data backing this `Guid` as a `&[u8]`.
     #[inline]
     pub fn as_bytes(&self) -> &[u8] {
         match &self.0 {
@@ -186,7 +137,6 @@ impl Guid {
         }
     }
 
-    /// Get the data backing this `Guid` as a `&str`.
     #[inline]
     pub fn as_str(&self) -> &str {
         match &self.0 {
@@ -195,7 +145,6 @@ impl Guid {
         }
     }
 
-    /// Convert this `Guid` into a `String`, consuming it in the process.
     #[inline]
     pub fn into_string(self) -> String {
         match self.0 {
@@ -204,8 +153,6 @@ impl Guid {
         }
     }
 
-    /// Returns true for Guids that are deemed valid by the sync server.
-    /// See https://github.com/mozilla-services/server-syncstorage/blob/d92ef07877aebd05b92f87f6ade341d6a55bffc8/syncstorage/bso.py#L24
     pub fn is_valid_for_sync_server(&self) -> bool {
         !self.is_empty()
             && self.len() <= 64
@@ -214,12 +161,10 @@ impl Guid {
                 .all(|b| (b' '..=b'~').contains(&b) && b != b',')
     }
 
-    /// Returns true for Guids that are valid places guids, and false for all others.
     pub fn is_valid_for_places(&self) -> bool {
         self.len() == 12 && self.bytes().all(Guid::is_valid_places_byte)
     }
 
-    /// Returns true if the byte `b` is a valid base64url byte.
     #[inline]
     pub fn is_valid_places_byte(b: u8) -> bool {
         BASE64URL_BYTES[b as usize] == 1
@@ -238,7 +183,6 @@ impl Guid {
     }
 }
 
-// This is used to implement the places tests.
 const BASE64URL_BYTES: [u8; 256] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0,
@@ -346,7 +290,6 @@ impl ops::Deref for Guid {
     }
 }
 
-// The default Debug impl is pretty unhelpful here.
 impl fmt::Debug for Guid {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Guid({:?})", self.as_str())
@@ -360,7 +303,6 @@ impl fmt::Display for Guid {
 }
 
 impl std::default::Default for Guid {
-    /// Create a default guid by calling `Guid::empty()`
     #[inline]
     fn default() -> Self {
         Guid::empty()
@@ -369,7 +311,7 @@ impl std::default::Default for Guid {
 
 macro_rules! impl_guid_eq {
     ($($other: ty),+) => {$(
-        // This macro is used for items with and without lifetimes.
+
         #[allow(clippy::extra_unused_lifetimes)]
         impl<'a> PartialEq<$other> for Guid {
             #[inline]
@@ -388,7 +330,6 @@ macro_rules! impl_guid_eq {
     )+}
 }
 
-// Implement direct comparison with some common types from the stdlib.
 impl_guid_eq![str, &'a str, String, [u8], &'a [u8], Vec<u8>];
 
 #[cfg(test)]
@@ -416,24 +357,24 @@ mod test {
     fn test_valid_for_places() {
         assert!(Guid::from("aaaabbbbcccc").is_valid_for_places());
         assert!(Guid::from_slice(b"09_az-AZ_09-").is_valid_for_places());
-        assert!(!Guid::from("aaaabbbbccccd").is_valid_for_places()); // too long
-        assert!(!Guid::from("aaaabbbbccc").is_valid_for_places()); // too short
-        assert!(!Guid::from("aaaabbbbccc=").is_valid_for_places()); // right length, bad character
-        assert!(!Guid::empty().is_valid_for_places()); // empty isn't valid to insert.
+        assert!(!Guid::from("aaaabbbbccccd").is_valid_for_places());
+        assert!(!Guid::from("aaaabbbbccc").is_valid_for_places());
+        assert!(!Guid::from("aaaabbbbccc=").is_valid_for_places());
+        assert!(!Guid::empty().is_valid_for_places());
     }
 
     #[test]
     fn test_valid_for_sync_server() {
-        assert!(!Guid::empty().is_valid_for_sync_server()); // empty isn't valid remotely.
+        assert!(!Guid::empty().is_valid_for_sync_server());
     }
 
-    #[allow(clippy::cmp_owned)] // See clippy note below.
+    #[allow(clippy::cmp_owned)]
     #[test]
     fn test_comparison() {
         assert_eq!(Guid::from("abcdabcdabcd"), "abcdabcdabcd");
         assert_ne!(Guid::from("abcdabcdabcd".to_string()), "ABCDabcdabcd");
 
-        assert_eq!(Guid::from("abcdabcdabcd"), &b"abcdabcdabcd"[..]); // b"abcdabcdabcd" has type &[u8; 12]...
+        assert_eq!(Guid::from("abcdabcdabcd"), &b"abcdabcdabcd"[..]);
         assert_ne!(Guid::from(&b"abcdabcdabcd"[..]), &b"ABCDabcdabcd"[..]);
 
         assert_eq!(
@@ -451,11 +392,6 @@ mod test {
             Vec::from(b"ABCDabcdabcd4321".as_ref())
         );
 
-        // order by data instead of length
-        // hrmph - clippy in 1.54-nightly complains about the below:
-        // 'error: this creates an owned instance just for comparison'
-        // '... help: try: `*"aaaaaa"`'
-        // and suggests a change that's wrong - so we've ignored the lint above.
         assert!(Guid::from("zzz") > Guid::from("aaaaaa"));
         assert!(Guid::from("ThisIsASolowGuid") < Guid::from("zzz"));
         assert!(Guid::from("ThisIsASolowGuid") > Guid::from("AnotherSlowGuid"));
@@ -464,9 +400,7 @@ mod test {
     #[test]
     fn test_random() {
         use std::collections::HashSet;
-        // Used to verify uniqueness within our sample of 1000. Could cause
-        // random failures, but desktop has the same test, and it's never caused
-        // a problem AFAIK.
+
         let mut seen: HashSet<String> = HashSet::new();
         for _ in 0..1000 {
             let g = Guid::random();

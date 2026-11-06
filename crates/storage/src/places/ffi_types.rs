@@ -2,9 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-//! Типы данных из `ffi.rs` компонента places, которые используют хранилище и поиск
-//! (сама обвязка uniffi для мобильных приложений не переносится).
-
 use url::Url;
 
 use crate::places::types::VisitType;

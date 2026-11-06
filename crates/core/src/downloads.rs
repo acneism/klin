@@ -1,16 +1,6 @@
-//! Какие переходы считать загрузкой файла.
-//!
-//! Отступление от Firefox: Firefox решает по ответу сервера (`Content-Disposition: attachment`
-//! и тип содержимого, который не умеет показать). Перехват запросов в Servo срабатывает
-//! до ответа, а патчи в Servo мы не отправляем (правила Servo запрещают код, написанный ИИ),
-//! поэтому загрузку распознаём по расширению в адресе.
-
 use klin_shared::Url;
 
-/// Расширения файлов, которые браузер не показывает, а сохраняет.
-/// PDF — тоже загрузка, пока нет встроенного просмотра (PDF.js, версия 0.3).
 const DOWNLOAD_EXTENSIONS: &[&str] = &[
-    // архивы
     "zip",
     "rar",
     "7z",
@@ -25,7 +15,6 @@ const DOWNLOAD_EXTENSIONS: &[&str] = &[
     "cab",
     "lz",
     "lzma",
-    // программы и пакеты
     "exe",
     "msi",
     "msix",
@@ -41,13 +30,11 @@ const DOWNLOAD_EXTENSIONS: &[&str] = &[
     "appimage",
     "flatpakref",
     "snap",
-    // образы дисков
     "iso",
     "img",
     "vhd",
     "vhdx",
     "vmdk",
-    // документы, которые браузер не показывает
     "doc",
     "docx",
     "xls",
@@ -60,7 +47,6 @@ const DOWNLOAD_EXTENSIONS: &[&str] = &[
     "rtf",
     "epub",
     "pdf",
-    // прочее
     "torrent",
     "bin",
     "dll",
@@ -70,7 +56,6 @@ const DOWNLOAD_EXTENSIONS: &[&str] = &[
     "woff2",
 ];
 
-/// Похож ли адрес на файл для загрузки.
 pub fn looks_like_download(url: &Url) -> bool {
     if !matches!(url.scheme(), "http" | "https") {
         return false;

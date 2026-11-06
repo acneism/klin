@@ -7,14 +7,6 @@ use rusqlite::{self, limits::Limit, types::ToSql};
 use std::iter::Map;
 use std::slice::Iter;
 
-/// Returns SQLITE_LIMIT_VARIABLE_NUMBER as read from an in-memory connection and cached.
-/// connection and cached. That means this will return the wrong value if it's set to a lower
-/// value for a connection using this will return the wrong thing, but doing so is rare enough
-/// that we explicitly don't support it (why would you want to lower this at runtime?).
-///
-/// If you call this and the actual value was set to a negative number or zero (nothing prevents
-/// this beyond a warning in the SQLite documentation), we panic. However, it's unlikely you can
-/// run useful queries if this happened anyway.
 pub fn default_max_variable_number() -> usize {
     lazy_static! {
         static ref MAX_VARIABLE_NUMBER: usize = {
@@ -33,15 +25,6 @@ pub fn default_max_variable_number() -> usize {
     *MAX_VARIABLE_NUMBER
 }
 
-/// Helper for the case where you have a `&[impl ToSql]` of arbitrary length, but need one
-/// of no more than the connection's `MAX_VARIABLE_NUMBER` (rather,
-/// `default_max_variable_number()`). This is useful when performing batched updates.
-///
-/// The `do_chunk` callback is called with a slice of no more than `default_max_variable_number()`
-/// items as it's first argument, and the offset from the start as it's second.
-///
-/// See `each_chunk_mapped` for the case where `T` doesn't implement `ToSql`, but can be
-/// converted to something that does.
 pub fn each_chunk<'a, T, E, F>(items: &'a [T], do_chunk: F) -> Result<(), E>
 where
     T: 'a,
@@ -50,8 +33,6 @@ where
     each_sized_chunk(items, default_max_variable_number(), do_chunk)
 }
 
-/// A version of `each_chunk` for the case when the conversion to `to_sql` requires an custom
-/// intermediate step. For example, you might want to grab a property off of an array of records
 pub fn each_chunk_mapped<'a, T, U, E, Mapper, DoChunk>(
     items: &'a [T],
     to_sql: Mapper,
@@ -66,11 +47,6 @@ where
     each_sized_chunk_mapped(items, default_max_variable_number(), to_sql, do_chunk)
 }
 
-// Split out for testing. Separate so that we can pass an actual slice
-// to the callback if they don't need mapping. We could probably unify
-// this with each_sized_chunk_mapped with a lot of type system trickery,
-// but one of the benefits to each_chunk over the mapped versions is
-// that the declaration is simpler.
 pub fn each_sized_chunk<'a, T, E, F>(
     items: &'a [T],
     chunk_size: usize,
@@ -91,13 +67,6 @@ where
     Ok(())
 }
 
-/// Utility to help perform batched updates, inserts, queries, etc. This is the low-level version
-/// of this utility which is wrapped by `each_chunk` and `each_chunk_mapped`, and it allows you to
-/// provide both the mapping function, and the chunk size.
-///
-/// Note: `mapped` basically just refers to the translating of `T` to some `U` where `U: ToSql`
-/// using the `to_sql` function. This is useful for e.g. inserting the IDs of a large list
-/// of records.
 pub fn each_sized_chunk_mapped<'a, T, U, E, Mapper, DoChunk>(
     items: &'a [T],
     chunk_size: usize,
@@ -131,12 +100,11 @@ where
 {
     let items = items.into_iter().collect::<Vec<_>>();
     assert_eq!(items.len(), expect.len());
-    // Can't quite make the borrowing work out here w/o a loop, oh well.
+
     for (idx, (got, want)) in items.iter().zip(expect.iter()).enumerate() {
         assert_eq!(
             got.to_sql().unwrap(),
             want.to_sql().unwrap(),
-            // ToSqlOutput::Owned(Value::Integer(*num)),
             "{}: Bad value at index {}",
             desc,
             idx
@@ -227,7 +195,6 @@ mod test_mapped {
                     iteration += 1;
                     Err("testing".to_string())
                 } else {
-                    // Make sure we stopped after the error.
                     panic!("Shouldn't get called with offset of {}", offset);
                 }
             },
@@ -301,7 +268,6 @@ mod test_unmapped {
                 iteration += 1;
                 Err("testing".to_string())
             } else {
-                // Make sure we stopped after the error.
                 panic!("Shouldn't get called with offset of {}", offset);
             }
         })

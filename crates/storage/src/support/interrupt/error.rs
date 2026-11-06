@@ -2,7 +2,6 @@
 License, v. 2.0. If a copy of the MPL was not distributed with this
 * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/// The error returned by err_if_interrupted.
 #[derive(Debug, Clone)]
 pub struct Interrupted;
 

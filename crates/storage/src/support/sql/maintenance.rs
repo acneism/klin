@@ -5,10 +5,6 @@
 use crate::support::sql::ConnExt;
 use rusqlite::{Connection, Result};
 
-/// Run maintenance on the DB
-///
-/// `run_maintenance()` is intended to be run during idle time and will take steps to clean up /
-/// shrink the database.
 pub fn run_maintenance(conn: &Connection) -> Result<()> {
     vacuum(conn)?;
     conn.execute_one("PRAGMA optimize")?;
@@ -16,14 +12,11 @@ pub fn run_maintenance(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Run vacuum on the DB
 pub fn vacuum(conn: &Connection) -> Result<()> {
     let auto_vacuum_setting: u32 = conn.conn_ext_query_one("PRAGMA auto_vacuum")?;
     if auto_vacuum_setting == 2 {
-        // Ideally, we run an incremental vacuum to delete 2 pages
         conn.execute_one("PRAGMA incremental_vacuum(2)")?;
     } else {
-        // If auto_vacuum=incremental isn't set, configure it and run a full vacuum.
         crate::support::error::warn!(
             "run_maintenance_vacuum: Need to run a full vacuum to set auto_vacuum=incremental"
         );

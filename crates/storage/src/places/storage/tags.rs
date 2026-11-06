@@ -8,29 +8,18 @@ use crate::places::error::{InvalidPlaceInfo, Result};
 use crate::support::sql::ConnExt;
 use url::Url;
 
-/// The validity of a tag.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ValidatedTag<'a> {
-    /// The tag is invalid.
     Invalid(&'a str),
-
-    /// The tag is valid, but normalized to remove leading and trailing
-    /// whitespace.
     Normalized(&'a str),
-
-    /// The original tag is valid.
     Original(&'a str),
 }
 
 impl<'a> ValidatedTag<'a> {
-    /// Returns `true` if the original tag is valid; `false` if it's invalid or
-    /// normalized.
     pub fn is_original(&self) -> bool {
         matches!(&self, ValidatedTag::Original(_))
     }
 
-    /// Returns the tag string if the tag is valid or normalized, or an error
-    /// if the tag is invalid.
     pub fn ensure_valid(&self) -> Result<&'a str> {
         match self {
             ValidatedTag::Invalid(_) => Err(InvalidPlaceInfo::InvalidTag.into()),
@@ -39,9 +28,7 @@ impl<'a> ValidatedTag<'a> {
     }
 }
 
-/// Checks the validity of the specified tag.
 pub fn validate_tag(tag: &str) -> ValidatedTag<'_> {
-    // Drop empty and oversized tags.
     let t = tag.trim();
     if t.is_empty() || t.len() > TAG_LENGTH_MAX {
         ValidatedTag::Invalid(tag)
@@ -52,26 +39,10 @@ pub fn validate_tag(tag: &str) -> ValidatedTag<'_> {
     }
 }
 
-/// Tags the specified URL.
-///
-/// # Arguments
-///
-/// * `conn` - A database connection on which to operate.
-///
-/// * `url` - The URL to tag.
-///
-/// * `tag` - The tag to add for the URL.
-///
-/// # Returns
-///
-/// There is no success return value.
 pub fn tag_url(db: &PlacesDb, url: &Url, tag: &str) -> Result<()> {
     let tag = validate_tag(tag).ensure_valid()?;
     let tx = db.begin_transaction()?;
 
-    // This function will not create a new place.
-    // Fetch the place id, so we (a) avoid creating a new tag when we aren't
-    // going to reference it and (b) to avoid a sub-query.
     let place_id = match fetch_page_info(db, url)? {
         Some(info) => info.page.row_id,
         None => return Err(InvalidPlaceInfo::NoSuchUrl.into()),
@@ -95,20 +66,6 @@ pub fn tag_url(db: &PlacesDb, url: &Url, tag: &str) -> Result<()> {
     Ok(())
 }
 
-/// Remove the specified tag from the specified URL.
-///
-/// # Arguments
-///
-/// * `conn` - A database connection on which to operate.
-///
-/// * `url` - The URL from which the tag should be removed.
-///
-/// * `tag` - The tag to remove from the URL.
-///
-/// # Returns
-///
-/// There is no success return value - the operation is ignored if the URL
-/// does not have the tag.
 pub fn untag_url(db: &PlacesDb, url: &Url, tag: &str) -> Result<()> {
     let tag = validate_tag(tag).ensure_valid()?;
     db.execute_cached(
@@ -123,17 +80,6 @@ pub fn untag_url(db: &PlacesDb, url: &Url, tag: &str) -> Result<()> {
     Ok(())
 }
 
-/// Remove all tags from the specified URL.
-///
-/// # Arguments
-///
-/// * `conn` - A database connection on which to operate.
-///
-/// * `url` - The URL for which all tags should be removed.
-///
-/// # Returns
-///
-/// There is no success return value.
 pub fn remove_all_tags_from_url(db: &PlacesDb, url: &Url) -> Result<()> {
     db.execute_cached(
         "DELETE FROM moz_tags_relation
@@ -146,17 +92,6 @@ pub fn remove_all_tags_from_url(db: &PlacesDb, url: &Url) -> Result<()> {
     Ok(())
 }
 
-/// Remove the specified tag from all URLs.
-///
-/// # Arguments
-///
-/// * `conn` - A database connection on which to operate.
-///
-/// * `tag` - The tag to remove.
-///
-/// # Returns
-///
-/// There is no success return value.
 pub fn remove_tag(db: &PlacesDb, tag: &str) -> Result<()> {
     db.execute_cached(
         "DELETE FROM moz_tags
@@ -166,18 +101,6 @@ pub fn remove_tag(db: &PlacesDb, tag: &str) -> Result<()> {
     Ok(())
 }
 
-/// Retrieves a list of URLs which have the specified tag.
-///
-/// # Arguments
-///
-/// * `conn` - A database connection on which to operate.
-///
-/// * `tag` - The tag to query.
-///
-/// # Returns
-///
-/// * A Vec<Url> with all URLs which have the tag, ordered by the frecency of
-///   the URLs.
 pub fn get_urls_with_tag(db: &PlacesDb, tag: &str) -> Result<Vec<Url>> {
     let tag = validate_tag(tag).ensure_valid()?;
 
@@ -197,18 +120,6 @@ pub fn get_urls_with_tag(db: &PlacesDb, tag: &str) -> Result<Vec<Url>> {
     Ok(urls)
 }
 
-/// Retrieves a list of tags for the specified URL.
-///
-/// # Arguments
-///
-/// * `conn` - A database connection on which to operate.
-///
-/// * `url` - The URL to query.
-///
-/// # Returns
-///
-/// * A Vec<String> with all tags for the URL, sorted by the last modified
-///   date of the tag (latest to oldest)
 pub fn get_tags_for_url(db: &PlacesDb, url: &Url) -> Result<Vec<String>> {
     let mut stmt = db.prepare(
         "SELECT t.tag
@@ -340,7 +251,6 @@ mod tests {
         check_urls_with_tag(&conn, "tag-2", vec![]);
         assert_eq!(get_foreign_count(&conn, &url2), 0);
 
-        // should be no tags rows left.
         let count: Result<Option<u32>> = conn.try_query_row(
             "SELECT COUNT(*) from moz_tags",
             [],
@@ -356,7 +266,6 @@ mod tests {
         );
         assert_eq!(count.unwrap().unwrap(), 0);
 
-        // places should still exist.
         fetch_page_info(&conn, &url1)
             .expect("should work")
             .expect("should exist");

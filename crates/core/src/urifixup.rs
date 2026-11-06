@@ -1,20 +1,11 @@
-//! Разбор ввода адресной строки: адрес или поисковый запрос.
-//!
-//! Порт упрощённой логики `URIFixup.sys.mjs` из Firefox
-//! (`docshell/base/URIFixup.sys.mjs`).
-//! Не перенесено (TODO, 0.2): проверка суффикса по Public Suffix List,
-//! `browser.fixup.domainwhitelist.*`, ключевые слова закладок, псевдонимы поисковиков.
-
 use klin_shared::Url;
 
-/// Результат разбора ввода.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Fixup {
     Url(Url),
     Search(String),
 }
 
-/// Схемы, которые принимаются как адрес без изменений.
 const KNOWN_SCHEMES: &[&str] = &[
     "http",
     "https",
@@ -31,7 +22,7 @@ pub fn fixup(input: &str) -> Option<Fixup> {
     if input.is_empty() {
         return None;
     }
-    // «? запрос» — принудительный поиск, как в Firefox.
+
     if let Some(rest) = input.strip_prefix('?') {
         let rest = rest.trim();
         return (!rest.is_empty()).then(|| Fixup::Search(rest.to_owned()));
@@ -53,7 +44,6 @@ pub fn fixup(input: &str) -> Option<Fixup> {
     Some(Fixup::Search(input.to_owned()))
 }
 
-/// «example.com/path», «localhost:8080», «192.168.0.1» → адрес.
 fn fixup_host_like(input: &str) -> Option<Url> {
     let end = input.find(['/', '?', '#']).unwrap_or(input.len());
     let authority = &input[..end];
@@ -64,12 +54,12 @@ fn fixup_host_like(input: &str) -> Option<Url> {
     };
     let host_lower = host.to_ascii_lowercase();
     let local = host_lower == "localhost" || host.parse::<std::net::Ipv4Addr>().is_ok();
-    // Отступление от Firefox: без PSL принимаем любой буквенный суффикс длиной от 2 символов.
+
     let domain = !local && looks_like_domain(&host_lower);
     if !local && !domain {
         return None;
     }
-    // Локальные адреса Firefox не переводит на HTTPS (https_first_schemeless их исключает).
+
     let scheme = if local { "http" } else { "https" };
     Url::parse(&format!("{scheme}://{input}")).ok()
 }
@@ -91,12 +81,9 @@ fn looks_like_domain(host: &str) -> bool {
     tld.starts_with("xn--") || (tld.chars().count() >= 2 && tld.chars().all(char::is_alphabetic))
 }
 
-/// Поисковая система. Временно — один шаблон; в 0.2 заменяется компонентом search
-/// из application-services поверх search-config-v2.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SearchEngine {
     pub name: String,
-    /// Шаблон OpenSearch с `{searchTerms}`.
     pub template: String,
 }
 
@@ -116,7 +103,6 @@ impl Default for SearchEngine {
     }
 }
 
-/// Ввод адресной строки → адрес для загрузки.
 pub fn to_url(input: &str, engine: &SearchEngine) -> Option<Url> {
     match fixup(input)? {
         Fixup::Url(url) => Some(url),

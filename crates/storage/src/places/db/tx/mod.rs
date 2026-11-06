@@ -10,23 +10,15 @@ use crate::support::sql::{ConnExt, UncheckedTransaction};
 use coop_transaction::ChunkedCoopTransaction;
 use rusqlite::Connection;
 
-/// High level transaction type which "does the right thing" for you.
-/// Construct one with `PlacesDb::begin_transaction()`.
 pub struct PlacesTransaction<'conn>(PlacesTransactionRepr<'conn>);
 
-/// Only separated from PlacesTransaction so that the internals of the former
-/// are private (so that it can't be `matched` on, for example)
 enum PlacesTransactionRepr<'conn> {
     ChunkedWrite(ChunkedCoopTransaction<'conn>),
     UnchunkedWrite(UncheckedTransaction<'conn>),
-    // Note: these might seem pointless, but can allow us to ensure consistency
-    // between separate reads.
     ReadOnly(UncheckedTransaction<'conn>),
 }
 
 impl PlacesTransaction<'_> {
-    /// Returns `true` if the current transaction should be committed at the
-    /// earliest opportunity.
     #[inline]
     pub fn should_commit(&self) -> bool {
         match &self.0 {
@@ -35,11 +27,6 @@ impl PlacesTransaction<'_> {
         }
     }
 
-    /// - For transactions on sync connections: Checks to see if we have held a
-    ///   transaction for longer than the requested time, and if so, commits the
-    ///   current transaction and opens another.
-    /// - For transactions on other connections: `debug_assert!`s, or logs a
-    ///   warning and does nothing.
     #[inline]
     pub fn maybe_commit(&mut self) -> Result<()> {
         if let PlacesTransactionRepr::ChunkedWrite(tx) = &mut self.0 {
@@ -56,7 +43,6 @@ impl PlacesTransaction<'_> {
         Ok(())
     }
 
-    /// Consumes and commits a PlacesTransaction transaction.
     pub fn commit(self) -> Result<()> {
         match self.0 {
             PlacesTransactionRepr::ChunkedWrite(t) => t.commit()?,
@@ -66,9 +52,6 @@ impl PlacesTransaction<'_> {
         Ok(())
     }
 
-    /// Consumes and attempst to roll back a PlacesTransaction. Note that if
-    /// maybe_commit has been called, this may only roll back as far as that
-    /// call.
     pub fn rollback(self) -> Result<()> {
         match self.0 {
             PlacesTransactionRepr::ChunkedWrite(t) => t.rollback()?,
@@ -80,11 +63,6 @@ impl PlacesTransaction<'_> {
 }
 
 impl super::PlacesDb {
-    /// Begin the "correct" transaction type for this connection.
-    ///
-    /// - For Sync connections, begins a chunked coop transaction.
-    /// - for ReadWrite connections, begins a normal coop transaction
-    /// - for ReadOnly connections, begins an unchecked transaction.
     pub fn begin_transaction(&self) -> Result<PlacesTransaction<'_>> {
         Ok(PlacesTransaction(match self.conn_type() {
             ConnectionType::Sync => {
@@ -94,7 +72,6 @@ impl super::PlacesDb {
                 PlacesTransactionRepr::UnchunkedWrite(self.coop_transaction()?)
             }
             ConnectionType::ReadOnly => {
-                // Use an unchecked transaction with no locking.
                 PlacesTransactionRepr::ReadOnly(self.unchecked_transaction()?)
             }
         }))

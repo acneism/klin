@@ -1,13 +1,3 @@
-//! Адаптер движка Servo — единственный крейт Klin, который зависит от `servo`.
-//!
-//! Когда API Servo меняется (ежемесячные выпуски могут его ломать), правится только
-//! этот крейт. Наружу он отдаёт реализацию [`klin_core::Engine`] и методы для цикла событий
-//! и отрисовки.
-//!
-//! Отрисовка — как в servoshell: страницы рисуются во внеэкранный буфер
-//! (`OffscreenRenderingContext`), интерфейс egui рисуется в окно через тот же GL-контекст,
-//! а страница копируется в свою область окна функцией из [`ServoEngine::page_blitter`].
-
 mod convert;
 mod delegate;
 mod protocol;
@@ -30,7 +20,6 @@ use crate::delegate::{Delegate, Pending, Shared};
 
 pub use crate::protocol::internal_url;
 
-/// Пробуждение цикла событий из любого потока: Servo зовёт его, когда у движка есть работа.
 #[derive(Clone)]
 pub struct Waker(Arc<dyn Fn() + Send + Sync>);
 
@@ -50,19 +39,14 @@ impl EventLoopWaker for Waker {
     }
 }
 
-/// Где движок хранит данные профиля.
 #[derive(Clone, Debug, Default)]
 pub struct EngineConfig {
-    /// Папка профиля: cookies, localStorage, HSTS и другие данные Servo.
     pub data_dir: Option<std::path::PathBuf>,
-    /// Файл дискового HTTP-кэша (в папке кэша профиля).
     pub http_cache: Option<std::path::PathBuf>,
 }
 
-/// См. [`ServoEngine::page_blitter`].
 pub type PageBlitter = Box<dyn Fn(&glow::Context, [i32; 4]) + Send + Sync>;
 
-/// Скрипт поиска на странице (`js/find.js`).
 const FIND_JS: &str = include_str!("../js/find.js");
 
 fn parse_find_result(json: &str) -> Option<klin_core::FindResult> {
@@ -79,7 +63,6 @@ fn parse_find_result(json: &str) -> Option<klin_core::FindResult> {
     })
 }
 
-/// Servo не принимает буферы нулевого размера (свёрнутое окно).
 fn non_zero(width: u32, height: u32) -> dpi::PhysicalSize<u32> {
     dpi::PhysicalSize::new(width.max(1), height.max(1))
 }
@@ -95,15 +78,12 @@ impl std::fmt::Display for EngineError {
 
 impl std::error::Error for EngineError {}
 
-/// Поверхность окна: GL-контекст окна и внеэкранный буфер, куда рисуют его вкладки.
 pub(crate) struct Surface {
     window_context: Rc<WindowRenderingContext>,
-    /// Сюда рисуют WebView этого окна; размер — область страницы в окне.
     pub page_context: Rc<OffscreenRenderingContext>,
     pub scale: Cell<f32>,
 }
 
-/// Движок Servo: один на процесс, поверхность — на каждое окно.
 pub struct ServoEngine {
     servo: Servo,
     shared: Rc<Shared>,
@@ -111,7 +91,6 @@ pub struct ServoEngine {
 }
 
 impl ServoEngine {
-    /// Запустить Servo. Окна добавляются через [`ServoEngine::add_window`].
     pub fn new(waker: Waker, config: EngineConfig) -> Result<Self, EngineError> {
         let mut protocols = servo::protocol_handler::ProtocolRegistry::with_internal_protocols();
         protocols
@@ -143,7 +122,6 @@ impl ServoEngine {
         })
     }
 
-    /// Подключить окно ОС: вкладки окна `window` будут рисоваться в него.
     pub fn add_window(
         &mut self,
         window: WindowId,
@@ -172,19 +150,15 @@ impl ServoEngine {
         Ok(())
     }
 
-    /// Окно закрыто. Его вкладки к этому моменту уже закрыты ядром.
     pub fn remove_window(&mut self, window: WindowId) {
         self.shared.surfaces.borrow_mut().remove(&window);
         self.shared.visible.borrow_mut().remove(&window);
     }
 
-    /// User-Agent движка: служба загрузок представляется сайтам так же, как страницы.
     pub fn user_agent(&self) -> String {
         servo::pref!(user_agent)
     }
 
-    /// Заголовок `Cookie` для адреса из хранилища движка (включая HttpOnly);
-    /// `callback` вызывается в главном потоке.
     pub fn cookie_header(&self, url: &Url, callback: impl FnOnce(Option<String>) + 'static) {
         self.servo.site_data_manager().cookies_for_url_async(
             url.clone(),
@@ -200,7 +174,6 @@ impl ServoEngine {
         );
     }
 
-    /// Дать движку поработать и забрать накопившиеся события.
     pub fn spin(&mut self) -> Vec<EngineEvent> {
         self.servo.spin_event_loop();
         self.shared.events.borrow_mut().drain(..).collect()
@@ -210,12 +183,10 @@ impl ServoEngine {
         self.shared.surfaces.borrow().get(&window).cloned()
     }
 
-    /// GL-контекст окна для отрисовки интерфейса (egui_glow).
     pub fn gl(&self, window: WindowId) -> Option<Arc<glow::Context>> {
         Some(self.surface(window)?.window_context.glow_gl_api())
     }
 
-    /// Сделать GL-контекст окна текущим (например, чтобы освободить ресурсы интерфейса).
     pub fn make_current(&self, window: WindowId) {
         if let Some(surface) = self.surface(window)
             && let Err(e) = surface.window_context.make_current()
@@ -224,7 +195,6 @@ impl ServoEngine {
         }
     }
 
-    /// Начать кадр окна: нарисовать видимую страницу во внеэкранный буфер и подготовить окно.
     pub fn begin_frame(&self, window: WindowId) {
         let Some(surface) = self.surface(window) else {
             return;
@@ -238,15 +208,12 @@ impl ServoEngine {
         surface.window_context.prepare_for_rendering();
     }
 
-    /// Показать готовый кадр окна.
     pub fn present(&self, window: WindowId) {
         if let Some(surface) = self.surface(window) {
             surface.window_context.present();
         }
     }
 
-    /// Функция, копирующая страницу окна в прямоугольник `[x, y, ширина, высота]`
-    /// в пикселях устройства, начало координат — внизу слева (как в OpenGL).
     pub fn page_blitter(&self, window: WindowId) -> Option<PageBlitter> {
         let blit = self
             .surface(window)?
@@ -260,14 +227,12 @@ impl ServoEngine {
         }))
     }
 
-    /// Размер окна изменился.
     pub fn resize_window(&self, window: WindowId, width: u32, height: u32) {
         if let Some(surface) = self.surface(window) {
             surface.window_context.resize(non_zero(width, height));
         }
     }
 
-    /// Размер области страницы изменился (окно минус панели интерфейса).
     pub fn resize_page(&self, window: WindowId, width: u32, height: u32) {
         let Some(surface) = self.surface(window) else {
             return;
@@ -276,9 +241,7 @@ impl ServoEngine {
         if surface.page_context.size() == size {
             return;
         }
-        // Размер контекста меняет сам Servo в WebView::resize: он же обновляет область
-        // просмотра страниц. Если изменить контекст заранее, Servo решит, что размер
-        // не изменился, и страница останется прежнего размера (innerHeight окна целиком).
+
         match self.shared.webviews_of(window).first() {
             Some(webview) => webview.resize(size),
             None => surface.page_context.resize(size),
@@ -295,7 +258,6 @@ impl ServoEngine {
         }
     }
 
-    /// Передать фокус ввода странице окна (или забрать, когда фокус в интерфейсе).
     pub fn set_page_focused(&self, window: WindowId, focused: bool) {
         if let Some(webview) = self.visible_webview(window) {
             webview.set_focused(focused);
@@ -315,11 +277,9 @@ impl ServoEngine {
 impl Engine for ServoEngine {
     fn open_tab(&mut self, tab: TabId, window: WindowId, url: &Url, private: bool) {
         if private {
-            // Отдельного контекста хранилища в API Servo пока не нашли — проверить до 0.2.
             warn!("private browsing is not isolated yet");
         }
         let Some(surface) = self.surface(window) else {
-            // Ядро открывает вкладки только в окнах, для которых вызван add_window.
             log::error!("open_tab: no surface for {window}");
             return;
         };
@@ -333,7 +293,6 @@ impl Engine for ServoEngine {
     }
 
     fn close_tab(&mut self, tab: TabId) {
-        // WebView закрывается, когда отпущена последняя ссылка на неё.
         self.shared.unregister(tab);
     }
 
@@ -357,7 +316,6 @@ impl Engine for ServoEngine {
 
     fn reload(&mut self, tab: TabId, bypass_cache: bool) {
         if bypass_cache {
-            // В API Servo нет перезагрузки в обход кэша — кандидат на патч.
             warn!("reload without cache is not supported by Servo yet; doing a normal reload");
         }
         if let Some(webview) = self.webview(tab) {
@@ -366,10 +324,6 @@ impl Engine for ServoEngine {
     }
 
     fn stop(&mut self, tab: TabId) {
-        // В API WebView нет остановки загрузки, а патчи в Servo мы не отправляем: правила
-        // Servo запрещают код, написанный ИИ. Поэтому — window.stop() в странице.
-        // Отступление от Firefox: window.stop() останавливает загрузку документа и его
-        // фреймов, но не отменяет переход, который ещё не дошёл до нового документа.
         let Some(webview) = self.webview(tab) else {
             return;
         };
@@ -422,7 +376,7 @@ impl Engine for ServoEngine {
             FindDirection::Previous => "previous",
             FindDirection::Clear => "clear",
         };
-        // Запрос передаётся строковым литералом JSON — он же корректный литерал JS.
+
         let query = serde_json::to_string(&request.query).unwrap_or_else(|_| "\"\"".into());
         let script = format!(
             "({})({query}, {}, {}, \"{direction}\")",
@@ -468,7 +422,6 @@ impl Engine for ServoEngine {
 
 impl Drop for ServoEngine {
     fn drop(&mut self) {
-        // Ответить «нет» на висящие запросы до остановки движка.
         let pending: Vec<Pending> = self
             .shared
             .pending

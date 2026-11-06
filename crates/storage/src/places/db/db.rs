@@ -25,9 +25,8 @@ use std::sync::{
 pub const MAX_VARIABLE_NUMBER: usize = 999;
 
 lazy_static! {
-    // Each API has a single bookmark change counter shared across all connections.
-    // This hashmap indexes them by the "api id" of the API.
-    pub static ref GLOBAL_BOOKMARK_CHANGE_COUNTERS: RwLock<HashMap<usize, AtomicI64>> = RwLock::new(HashMap::new());
+    pub static ref GLOBAL_BOOKMARK_CHANGE_COUNTERS: RwLock<HashMap<usize, AtomicI64>> =
+        RwLock::new(HashMap::new());
 }
 
 pub struct PlacesInitializer {
@@ -131,7 +130,6 @@ impl PlacesDb {
             interrupt_handle: Arc::new(SqlInterruptHandle::new(&db)),
             db,
             conn_type,
-            // The API sets this explicitly.
             api_id,
             coop_tx_lock,
         }
@@ -149,8 +147,6 @@ impl PlacesDb {
     }
 
     #[cfg(test)]
-    // Useful for some tests (although most tests should use helper functions
-    // in api::places_api::test)
     pub fn open_in_memory(conn_type: ConnectionType) -> Result<Self> {
         let initializer = PlacesInitializer {
             api_id: 0,
@@ -182,10 +178,6 @@ impl PlacesDb {
         self.conn_type
     }
 
-    /// Returns an object that can tell you whether any changes have been made
-    /// to bookmarks since this was called.
-    /// While this conceptually should live on the PlacesApi, the things that
-    /// need this typically only have a PlacesDb, so we expose it here.
     pub fn global_bookmark_change_tracker(&self) -> GlobalChangeCounterTracker {
         GlobalChangeCounterTracker::new(self.api_id)
     }
@@ -198,15 +190,10 @@ impl PlacesDb {
 
 impl Drop for PlacesDb {
     fn drop(&mut self) {
-        // In line with both the recommendations from SQLite and the behavior of places in
-        // Database.cpp, we run `PRAGMA optimize` before closing the connection.
         if let ConnectionType::ReadOnly = self.conn_type() {
-            // A reader connection can't execute an optimize
             return;
         }
-        // The 0x12 flags mean: run ANALYZE on tables that might benefit (0x02), with a row
-        // limit to keep runtime bounded (0x10). Mirrors the flags used on desktop since
-        // Bug 2017227.
+
         let res = self.db.execute_batch("PRAGMA optimize(0x12);");
         if let Err(e) = res {
             warn!("Failed to execute pragma optimize (DB locked?): {}", e);
@@ -229,7 +216,6 @@ impl Deref for PlacesDb {
     }
 }
 
-/// PlacesDB that's behind a Mutex so it can be shared between threads
 pub struct SharedPlacesDb {
     db: Mutex<PlacesDb>,
     interrupt_handle: Arc<SqlInterruptHandle>,
@@ -248,7 +234,6 @@ impl SharedPlacesDb {
     }
 }
 
-// Deref to a Mutex<PlacesDb>, which is how we will use SharedPlacesDb most of the time
 impl Deref for SharedPlacesDb {
     type Target = Mutex<PlacesDb>;
 
@@ -258,15 +243,12 @@ impl Deref for SharedPlacesDb {
     }
 }
 
-// Also implement AsRef<SqlInterruptHandle> so that we can interrupt this at shutdown
 impl AsRef<SqlInterruptHandle> for SharedPlacesDb {
     fn as_ref(&self) -> &SqlInterruptHandle {
         &self.interrupt_handle
     }
 }
 
-/// An object that can tell you whether a bookmark changing operation has
-/// happened since the object was created.
 pub struct GlobalChangeCounterTracker {
     api_id: usize,
     start_value: i64,
@@ -280,8 +262,6 @@ impl GlobalChangeCounterTracker {
         }
     }
 
-    // The value is an implementation detail, so just expose what we care
-    // about - ie, "has it changed?"
     pub fn changed(&self) -> bool {
         Self::cur_value(self.api_id) != self.start_value
     }
@@ -314,8 +294,6 @@ impl Pragma {
     }
 }
 
-/// A scope guard that sets a Boolean PRAGMA to a new value, and
-/// restores the inverse of the value when dropped.
 pub struct PragmaGuard<'a> {
     conn: &'a Connection,
     pragma: Pragma,
@@ -421,7 +399,6 @@ pub(crate) mod sql_fns {
     use rusqlite::{Error, Result, functions::Context, types::ValueRef};
     use std::sync::atomic::Ordering;
 
-    // Helpers for define_functions
     fn get_raw_str<'a>(ctx: &'a Context<'_>, fname: &'static str, idx: usize) -> Result<&'a str> {
         ctx.get_raw(idx).as_str().map_err(|e| {
             Error::UserFunctionError(format!("Bad arg {} to '{}': {}", idx, fname, e).into())
@@ -442,24 +419,10 @@ pub(crate) mod sql_fns {
         })?))
     }
 
-    // Note: The compiler can't meaningfully inline these, but if we don't put
-    // #[inline(never)] on them they get "inlined" into a temporary Box<FnMut>,
-    // which doesn't have a name (and itself doesn't get inlined). Adding
-    // #[inline(never)] ensures they show up in profiles.
-
     #[inline(never)]
     pub fn hash(ctx: &Context<'_>) -> rusqlite::Result<Option<i64>> {
         Ok(match ctx.len() {
-            1 => {
-                // This is a deterministic function, which means sqlite
-                // does certain optimizations which means hash() may be called
-                // with a null value even though the query prevents the null
-                // value from actually being used. As a special case, we return
-                // null when the input is NULL. We return NULL instead of zero
-                // because the hash columns are NOT NULL, so attempting to
-                // actually use the null should fail.
-                get_raw_opt_str(ctx, "hash", 0)?.map(|value| hash::hash_url(value) as i64)
-            }
+            1 => get_raw_opt_str(ctx, "hash", 0)?.map(|value| hash::hash_url(value) as i64),
             2 => {
                 let value = get_raw_opt_str(ctx, "hash", 0)?;
                 let mode = get_raw_str(ctx, "hash", 1)?;
@@ -516,7 +479,6 @@ pub(crate) mod sql_fns {
 
     #[inline(never)]
     pub fn reverse_host(ctx: &Context<'_>) -> Result<String> {
-        // We reuse this memory so no need for get_raw.
         let mut host = ctx.get::<String>(0)?;
         debug_assert!(host.is_ascii(), "Hosts must be Punycoded");
 
@@ -578,17 +540,15 @@ pub(crate) mod sql_fns {
             .read()
             .expect("gbcc poisoned");
         if let Some(counter) = map.get(&api_id) {
-            // Because we only ever check for equality, we can use Relaxed ordering.
             return Ok(counter.fetch_add(1, Ordering::Relaxed));
         }
-        // Need to add the counter to the map - drop the read lock before
-        // taking the write lock.
+
         drop(map);
         let mut map = GLOBAL_BOOKMARK_CHANGE_COUNTERS
             .write()
             .expect("gbcc poisoned");
         let counter = map.entry(api_id).or_default();
-        // Because we only ever check for equality, we can use Relaxed ordering.
+
         Ok(counter.fetch_add(1, Ordering::Relaxed))
     }
 }
@@ -597,7 +557,6 @@ pub(crate) mod sql_fns {
 mod tests {
     use super::*;
 
-    // Sanity check that we can create a database.
     #[test]
     fn test_open() {
         PlacesDb::open_in_memory(ConnectionType::ReadWrite).expect("no memory db");

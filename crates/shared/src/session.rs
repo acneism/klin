@@ -1,9 +1,5 @@
-//! Снимок сессии: окна, вкладки, их история переходов и закрытые вкладки.
-//! Ядро строит его из своей модели, хранилище пишет в `sessionstore.jsonlz4` (формат Firefox).
-
 use crate::Url;
 
-/// Запись истории переходов вкладки.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EntryState {
     pub url: Url,
@@ -13,7 +9,6 @@ pub struct EntryState {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TabState {
     pub entries: Vec<EntryState>,
-    /// Текущая запись, с нуля (в файле Firefox — с единицы).
     pub index: usize,
 }
 
@@ -26,16 +21,13 @@ impl TabState {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClosedTabState {
     pub tab: TabState,
-    /// Позиция вкладки в окне на момент закрытия.
     pub pos: usize,
-    /// Время закрытия, мс с начала эпохи Unix.
     pub closed_at_ms: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WindowState {
     pub tabs: Vec<TabState>,
-    /// Выбранная вкладка, с нуля.
     pub selected: usize,
     pub closed_tabs: Vec<ClosedTabState>,
 }
@@ -43,6 +35,5 @@ pub struct WindowState {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Session {
     pub windows: Vec<WindowState>,
-    /// Активное окно, с нуля.
     pub selected_window: usize,
 }

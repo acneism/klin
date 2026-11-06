@@ -115,7 +115,7 @@ impl Iterator for VisitTransitionSetIter {
             self.pos += 1;
             self.bits >>= 1;
         }
-        // Should always be fine unless VisitTransitionSet has a bug.
+
         let result: VisitType = self.pos.try_into().expect("Bug in VisitTransitionSet");
         self.pos += 1;
         self.bits >>= 1;

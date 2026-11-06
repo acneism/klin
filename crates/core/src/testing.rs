@@ -1,6 +1,3 @@
-//! Тестовая реализация [`Engine`] без Servo: логика вкладок, сессий и команд
-//! проверяется за секунды и без сборки движка.
-
 use std::collections::HashMap;
 
 use klin_shared::{RequestId, TabId, Url, WindowId};
@@ -8,7 +5,6 @@ use klin_shared::{RequestId, TabId, Url, WindowId};
 use crate::engine::{Engine, Reply};
 use crate::input::InputEvent;
 
-/// Вызов движка, записанный [`FakeEngine`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum Call {
     OpenTab(TabId, WindowId, Url, bool),

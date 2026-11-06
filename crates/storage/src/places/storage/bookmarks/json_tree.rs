@@ -2,18 +2,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-// This supports inserting and fetching an entire bookmark tree via JSON
-// compatible data structures.
-// It's currently used only by tests, examples and our utilities for importing
-// from a desktop JSON exports.
-//
-// None of our "real" consumers currently require JSON compatibility, so try
-// and avoid using this if you can!
-// (We could possibly put this behind a feature flag?)
-
 use crate::places::error::{Result, warn};
 use crate::places::types::BookmarkType;
-//#[cfg(test)]
+
 use crate::places::db::PlacesDb;
 use crate::support::guid::Guid as SyncGuid;
 use crate::support::sql::ConnExt;
@@ -33,13 +24,6 @@ use serde::{
 };
 use serde_derive::*;
 
-/// Support for inserting and fetching a tree. Same limitations as desktop.
-/// Note that the guids are optional when inserting a tree. They will always
-/// have values when fetching it.
-// For testing purposes we implement PartialEq, such that optional fields are
-// ignored in the comparison. This allows tests to construct a tree with
-// missing fields and be able to compare against a tree with all fields (such
-// as one exported from the DB)
 #[cfg(test)]
 fn cmp_options<T: PartialEq>(s: &Option<T>, o: &Option<T>) -> bool {
     match (s, o) {
@@ -147,7 +131,7 @@ impl BookmarkTreeNode {
             BookmarkTreeNode::Folder { f } => f.guid.as_ref(),
             BookmarkTreeNode::Separator { s } => s.guid.as_ref(),
         };
-        // Can this happen? Why is this an Option?
+
         guid.expect("Missing guid?")
     }
 
@@ -164,8 +148,6 @@ impl BookmarkTreeNode {
     }
 }
 
-// Serde makes it tricky to serialize what we need here - a 'type' from the
-// enum and then a flattened variant struct. So we gotta do it manually.
 impl Serialize for BookmarkTreeNode {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
@@ -205,7 +187,6 @@ impl<'de> Deserialize<'de> for BookmarkTreeNode {
     where
         D: Deserializer<'de>,
     {
-        // *sob* - a union of fields we post-process.
         #[derive(Debug, Default, Deserialize)]
         #[serde(default)]
         struct Mapping {
@@ -320,12 +301,11 @@ mod test_serialize {
                 }],
             },
         };
-        // round-trip the tree via serde.
+
         let json = serde_json::to_string_pretty(&tree)?;
         let deser: BookmarkTreeNode = serde_json::from_str(&json)?;
         assert_eq!(tree, deser);
-        // and check against the simplest json repr of the tree, which checks
-        // our PartialEq implementation.
+
         let jtree = json!({
             "type": 2,
             "guid": &guid,
@@ -401,8 +381,6 @@ mod test_serialize {
 }
 
 pub fn insert_tree(db: &PlacesDb, tree: FolderNode) -> Result<()> {
-    // This API is strange - we don't add `tree`, but just use it for the parent.
-    // It's only used for json importing, so we can live with a strange API :)
     let parent = tree.guid.expect("inserting a tree without the root guid");
     let tx = db.begin_transaction()?;
     for child in tree.children {
@@ -441,8 +419,6 @@ struct FetchedTreeRow {
     level: u32,
     _id: RowId,
     guid: SyncGuid,
-    // parent and parent_guid are Option<> only to handle the root - we would
-    // assert but they aren't currently used.
     _parent: Option<RowId>,
     parent_guid: Option<SyncGuid>,
     node_type: BookmarkType,
@@ -476,9 +452,6 @@ impl FetchedTreeRow {
     }
 }
 
-/// Fetch the tree starting at the specified guid.
-/// Returns a `BookmarkTreeNode`, its parent's guid (if any), and
-/// position inside its parent.
 pub enum FetchDepth {
     Specific(usize),
     Deepest,
@@ -489,8 +462,6 @@ pub fn fetch_tree(
     item_guid: &SyncGuid,
     target_depth: &FetchDepth,
 ) -> Result<Option<(BookmarkTreeNode, Option<SyncGuid>, u32)>> {
-    // XXX - this needs additional work for tags - unlike desktop, there's no
-    // "tags" folder, but instead a couple of tables to join on.
     let sql = r#"
         WITH RECURSIVE
         descendants(fk, level, type, id, guid, parent, parentGuid, position,
@@ -539,7 +510,6 @@ pub fn fetch_tree(
     let parent_guid: Option<SyncGuid>;
     let position: u32;
 
-    // The first row in the result set is always the root of our tree.
     let mut root = match results.next() {
         Some(result) => {
             let row = result?;
@@ -554,37 +524,27 @@ pub fn fetch_tree(
                     children: Vec::new(),
                 }
                 .into(),
-                BookmarkType::Bookmark => {
-                    // pretend invalid or missing URLs don't exist.
-                    match row.url {
-                        Some(str_val) => match Url::parse(str_val.as_str()) {
-                            // an invalid URL presumably means a logic error
-                            // somewhere far away from here...
-                            Err(_) => return Ok(None),
-                            Ok(url) => BookmarkNode {
-                                guid: Some(row.guid.clone()),
-                                date_added: Some(row.date_added),
-                                last_modified: Some(row.last_modified),
-                                title: row.title,
-                                url,
-                            }
-                            .into(),
-                        },
-                        // This is double-extra-invalid because various
-                        // constraints in the schema should prevent it (but we
-                        // know from desktop's experience that on-disk
-                        // corruption can cause it, so it's possible) - but
-                        // we treat it as an `error` rather than just a `warn`
-                        None => {
-                            crate::support::error::report_error!(
-                                "places-bookmark-corruption",
-                                "bookmark {:#} has missing url",
-                                row.guid
-                            );
-                            return Ok(None);
+                BookmarkType::Bookmark => match row.url {
+                    Some(str_val) => match Url::parse(str_val.as_str()) {
+                        Err(_) => return Ok(None),
+                        Ok(url) => BookmarkNode {
+                            guid: Some(row.guid.clone()),
+                            date_added: Some(row.date_added),
+                            last_modified: Some(row.last_modified),
+                            title: row.title,
+                            url,
                         }
+                        .into(),
+                    },
+                    None => {
+                        crate::support::error::report_error!(
+                            "places-bookmark-corruption",
+                            "bookmark {:#} has missing url",
+                            row.guid
+                        );
+                        return Ok(None);
                     }
-                }
+                },
                 BookmarkType::Separator => SeparatorNode {
                     guid: Some(row.guid.clone()),
                     date_added: Some(row.date_added),
@@ -596,21 +556,17 @@ pub fn fetch_tree(
         None => return Ok(None),
     };
 
-    // Skip the rest and return if root is not a folder
     if let BookmarkTreeNode::Bookmark { .. } | BookmarkTreeNode::Separator { .. } = root {
         return Ok(Some((root, parent_guid, position)));
     }
 
     scope.err_if_interrupted()?;
-    // For all remaining rows, build a pseudo-tree that maps parent GUIDs to
-    // ordered children. We need this intermediate step because SQLite returns
-    // results in level order, so we'll see a node's siblings and cousins (same
-    // level, but different parents) before any of their descendants.
+
     let mut pseudo_tree: HashMap<SyncGuid, Vec<BookmarkTreeNode>> = HashMap::new();
     for result in results {
         let row = result?;
         scope.err_if_interrupted()?;
-        // Check if we have done fetching the asked depth
+
         if let FetchDepth::Specific(d) = *target_depth
             && row.level as usize > d + 1
         {
@@ -661,7 +617,6 @@ pub fn fetch_tree(
         }
     }
 
-    // Finally, inflate our tree.
     inflate(&mut root, &mut pseudo_tree);
     Ok(Some((root, parent_guid, position)))
 }
@@ -674,13 +629,10 @@ mod tests {
     use crate::places::tests::{assert_json_tree, assert_json_tree_with_depth};
     use serde_json::json;
 
-    // These tests check the SQL that this JSON module does "behind the back" of the
-    // main storage API.
     #[test]
     fn test_fetch_root() -> Result<()> {
         let conn = new_mem_connection();
 
-        // Fetch the root
         let (t, _, _) =
             fetch_tree(&conn, &BookmarkRootGuid::Root.into(), &FetchDepth::Deepest)?.unwrap();
         let f = match t {
@@ -769,10 +721,9 @@ mod tests {
                 }
             ]
         });
-        // check it with deepest fetching level.
+
         assert_json_tree(&conn, &BookmarkRootGuid::Unfiled.into(), expected.clone());
 
-        // check it with one level deep, which should be the same as the previous
         assert_json_tree_with_depth(
             &conn,
             &BookmarkRootGuid::Unfiled.into(),
@@ -780,7 +731,6 @@ mod tests {
             &FetchDepth::Specific(1),
         );
 
-        // check it with zero level deep, which should return root and its children only
         assert_json_tree_with_depth(
             &conn,
             &BookmarkRootGuid::Unfiled.into(),

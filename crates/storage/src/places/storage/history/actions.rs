@@ -4,29 +4,6 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Structs to handle actions that mutate the History DB
-//!
-//! Places DB operations are complex and often involve several layers of changes which makes them
-//! hard to test.  For example, a function that deletes visits in a date range needs to:
-//!   - Calculate which visits to delete
-//!   - Delete the visits
-//!   - Insert visit tombstones
-//!   - Update the frecency for non-orphaned affected pages
-//!   - Delete orphaned pages
-//!   - Insert page tombstones for deleted synced pages
-//!
-//! Test all of this functionality at once leads to ugly tests that are hard to reason about and
-//! hard to change.  This is especially true since many steps have multiple branches which
-//! multiplies the complexity.
-//!
-//! This module is intended to split up operations to make testing simpler.  It defines an enum
-//! whose variants encapsulate particular actions.  We can use that enum to split operations into
-//! multiple parts, each which can be tested separately: code that calculates which actions to run
-//! and the code to run each action.
-//!
-//! Right now, only a couple function use this system, but hopefully we can use it more in the
-//! future.
-
 use super::{PageToClean, cleanup_pages};
 use crate::places::error::Result;
 use crate::places::{PlacesDb, RowId};
@@ -34,19 +11,10 @@ use crate::support::sql::ConnExt;
 use rusqlite::Row;
 use std::collections::HashSet;
 
-/// Enum whose variants describe a particular action on the DB
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum DbAction {
-    /// Delete visit rows from the DB.
     DeleteVisitRows { visit_ids: HashSet<RowId> },
-    /// Recalculate the moz_places data, including frecency, after changes to their visits.  This
-    /// also deletes orphaned pages (pages whose visits have all been deleted).
     RecalcPages { page_ids: HashSet<RowId> },
-    /// Delete rows in pending temp tables.  This should be done after any changes to the
-    /// moz_places table.
-    ///
-    /// Deleting from these tables triggers changes to the `moz_origins` table. See
-    /// `sql/create_shared_temp_tables.sql` and `sql/create_shared_triggers.sql` for details.
     DeleteFromPendingTempTables,
 }
 
@@ -120,10 +88,6 @@ impl DbAction {
     }
 }
 
-/// Stores a visit that we want to delete
-///
-/// We build a Vec of these from queries against the `moz_historyvisits` table, then transform that
-/// into a `Vec<DbAction>`.
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub(super) struct VisitToDelete {
     pub(super) visit_id: RowId,
@@ -131,9 +95,6 @@ pub(super) struct VisitToDelete {
 }
 
 impl VisitToDelete {
-    /// Create a VisitToDelete from a query row
-    ///
-    /// The query must that includes the `id` and `place_id` columns from `moz_historyvisits`.
     pub(super) fn from_row(row: &Row<'_>) -> Result<Self> {
         Ok(Self {
             visit_id: row.get("id")?,
@@ -142,7 +103,6 @@ impl VisitToDelete {
     }
 }
 
-/// Create a Vec<DbAction> from a Vec<VisitToDelete>
 pub(super) fn db_actions_from_visits_to_delete(
     visits_to_delete: Vec<VisitToDelete>,
 ) -> Vec<DbAction> {

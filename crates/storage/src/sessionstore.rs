@@ -1,14 +1,3 @@
-//! Восстановление сессии — формат и правила sessionstore Firefox
-//! (`browser/components/sessionstore`, MPL 2.0):
-//!
-//! - `sessionstore-backups/recovery.jsonlz4` — пишется во время работы не реже раза в 15 с
-//!   (`browser.sessionstore.interval`), прежняя версия становится `recovery.baklz4`;
-//! - `sessionstore.jsonlz4` — пишется при обычном выходе, файлы восстановления удаляются;
-//! - при запуске `sessionstore.jsonlz4` переезжает в `sessionstore-backups/previous.jsonlz4`.
-//!
-//! Файлы — JSON в сжатии mozlz4: `mozLz40\0`, размер (u32 LE) и блок LZ4.
-//! Запись атомарна: временный файл и переименование.
-
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -23,8 +12,6 @@ use serde::{Deserialize, Serialize};
 const MAGIC: &[u8; 8] = b"mozLz40\0";
 const STATE_RUNNING: &str = "running";
 const STATE_STOPPED: &str = "stopped";
-
-// ---------- mozlz4 ----------
 
 pub fn compress_mozlz4(data: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(12 + data.len() / 2);
@@ -42,8 +29,6 @@ pub fn decompress_mozlz4(data: &[u8]) -> io::Result<Vec<u8>> {
     let size = u32::from_le_bytes(data[8..12].try_into().expect("4 bytes")) as usize;
     lz4_flex::block::decompress(&data[12..], size).map_err(|e| bad(&e.to_string()))
 }
-
-// ---------- JSON в структуре Firefox (подмножество полей) ----------
 
 #[derive(Serialize, Deserialize, Default)]
 struct FileState {
@@ -77,7 +62,6 @@ struct FileSession {
 struct FileWindow {
     #[serde(default)]
     tabs: Vec<FileTab>,
-    /// С единицы.
     #[serde(default)]
     selected: usize,
     #[serde(rename = "_closedTabs", default)]
@@ -88,7 +72,6 @@ struct FileWindow {
 struct FileTab {
     #[serde(default)]
     entries: Vec<FileEntry>,
-    /// С единицы.
     #[serde(default)]
     index: usize,
     #[serde(rename = "lastAccessed", default)]
@@ -243,7 +226,6 @@ fn from_file(file: &FileState) -> Session {
     }
 }
 
-/// Прочитать файл сессии. Возвращает сессию и признак «браузер не был закрыт» (`running`).
 pub fn read_session(path: &Path) -> io::Result<(Session, bool)> {
     let bytes = fs::read(path)?;
     let json = decompress_mozlz4(&bytes)?;
@@ -266,14 +248,9 @@ fn write_atomic(path: &Path, data: &[u8]) -> io::Result<()> {
     fs::rename(&tmp, path)
 }
 
-// ---------- запуск и служба записи ----------
-
-/// Откуда восстанавливать при запуске.
 #[derive(Debug, PartialEq)]
 pub enum StartupSession {
-    /// Восстановить сессию; `after_crash` — прошлый запуск завершился сбоем.
     Restore { session: Session, after_crash: bool },
-    /// Начать заново (домашняя страница или адрес из командной строки).
     Fresh,
 }
 
@@ -297,9 +274,6 @@ impl SessionPaths {
     }
 }
 
-/// Решить, что восстанавливать при запуске (правила Firefox):
-/// после сбоя — сессию из файла восстановления, если `resume_from_crash`;
-/// после обычного выхода — `sessionstore.jsonlz4`, если `browser.startup.page = 3`.
 pub fn startup_session(
     paths: &SessionPaths,
     startup_page: i64,
@@ -323,7 +297,7 @@ pub fn startup_session(
             _ => StartupSession::Fresh,
         },
     };
-    // Прошлая сессия сохраняется как «предыдущая» (меню «Восстановить предыдущую сессию»).
+
     if paths.main.exists() {
         if let Some(dir) = paths.previous.parent() {
             let _ = fs::create_dir_all(dir);
@@ -340,7 +314,6 @@ enum Message {
     Stopped(Session),
 }
 
-/// Запись сессии в фоновом потоке.
 pub struct SessionWriter {
     tx: Option<Sender<Message>>,
     thread: Option<JoinHandle<()>>,
@@ -360,15 +333,12 @@ impl SessionWriter {
         }
     }
 
-    /// Периодическое сохранение во время работы (файл восстановления).
     pub fn save(&self, session: Session) {
         if let Some(tx) = &self.tx {
             let _ = tx.send(Message::Running(session));
         }
     }
 
-    /// Обычный выход: записать `sessionstore.jsonlz4` и удалить файлы восстановления.
-    /// Возвращает, когда файл записан.
     pub fn finish(mut self, session: Session) {
         if let Some(tx) = self.tx.take() {
             let _ = tx.send(Message::Stopped(session));
@@ -513,7 +483,6 @@ mod tests {
         let dir = temp("startup");
         let paths = SessionPaths::new(&dir);
 
-        // Сбой: остался файл восстановления.
         let writer = SessionWriter::start(paths.clone());
         writer.save(session());
         drop(writer);
@@ -527,17 +496,15 @@ mod tests {
         );
         assert_eq!(startup_session(&paths, 1, false), StartupSession::Fresh);
 
-        // Обычный выход: файлы восстановления удаляются.
         let writer = SessionWriter::start(paths.clone());
         writer.save(session());
         writer.finish(session());
         assert!(!paths.recovery.exists() && !paths.recovery_backup.exists());
         assert!(paths.main.exists());
-        // browser.startup.page = 1: домашняя страница, файл уходит в previous.jsonlz4.
+
         assert_eq!(startup_session(&paths, 1, true), StartupSession::Fresh);
         assert!(!paths.main.exists() && paths.previous.exists());
 
-        // browser.startup.page = 3: восстановить.
         SessionWriter::start(paths.clone()).finish(session());
         assert_eq!(
             startup_session(&paths, 3, true),

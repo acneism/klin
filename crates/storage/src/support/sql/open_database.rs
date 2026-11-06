@@ -2,33 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/// Use this module to open a new SQLite database connection.
-///
-/// Usage:
-///    - Define a struct that implements ConnectionInitializer.  This handles:
-///      - Initializing the schema for a new database
-///      - Upgrading the schema for an existing database
-///      - Extra preparation/finishing steps, for example setting up SQLite functions
-///
-///    - Call open_database() in your database constructor:
-///      - The first method called is `prepare()`.  This is executed outside of a transaction
-///        and is suitable for executing pragmas (eg, `PRAGMA journal_mode=wal`), defining
-///        functions, etc.
-///      - If the database file is not present and the connection is writable, open_database()
-///        will create a new DB and call init(), then finish(). If the connection is not
-///        writable it will panic, meaning that if you support ReadOnly connections, they must
-///        be created after a writable connection is open.
-///      - If the database file exists and the connection is writable, open_database() will open
-///        it and call prepare(), upgrade_from() for each upgrade that needs to be applied, then
-///        finish(). As above, a read-only connection will panic if upgrades are necessary, so
-///        you should ensure the first connection opened is writable.
-///      - If the database file is corrupt, or upgrade_from() returns [`Error::Corrupt`], the
-///        database file will be removed and replaced with a new DB.
-///      - If the connection is not writable, `finish()` will be called (ie, `finish()`, like
-///        `prepare()`, is called for all connections)
-///
-///  See the autofill DB code for an example.
-///
 use std::{
     path::Path,
     sync::atomic::{AtomicUsize, Ordering},
@@ -43,7 +16,7 @@ use crate::support::sql::ConnExt;
 use crate::support::sql::{debug, info, warn};
 
 #[derive(Error, Debug)]
-#[allow(clippy::enum_variant_names)] // имена как в application-services
+#[allow(clippy::enum_variant_names)]
 pub enum Error {
     #[error("Incompatible database version: {0}")]
     IncompatibleVersion(u32),
@@ -73,28 +46,18 @@ impl From<rusqlite::Error> for Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 pub trait ConnectionInitializer {
-    // Name to display in the logs
     const NAME: &'static str;
 
-    // The version that the last upgrade function upgrades to.
     const END_VERSION: u32;
 
-    // Functions called only for writable connections all take a Transaction
-    // Initialize a newly created database to END_VERSION
     fn init(&self, tx: &Transaction<'_>) -> Result<()>;
 
-    // Upgrade schema from version -> version + 1
     fn upgrade_from(&self, conn: &Transaction<'_>, version: u32) -> Result<()>;
 
-    // Runs immediately after creation for all types of connections. If writable,
-    // will *not* be in the transaction created for the "only writable" functions above.
     fn prepare(&self, _conn: &Connection, _db_empty: bool) -> Result<()> {
         Ok(())
     }
 
-    // Runs for all types of connections. If a writable connection is being
-    // initialized, this will be called after all initialization functions,
-    // but inside their transaction.
     fn finish(&self, _conn: &Connection) -> Result<()> {
         Ok(())
     }
@@ -119,13 +82,11 @@ pub fn open_database_with_flags<CI: ConnectionInitializer, P: AsRef<Path>>(
     connection_initializer: &CI,
 ) -> Result<Connection> {
     do_open_database_with_flags(&path, open_flags, connection_initializer).or_else(|e| {
-        // See if we can recover from the error and try a second time
         try_handle_db_failure(&path, open_flags, connection_initializer, e)?;
         do_open_database_with_flags(&path, open_flags, connection_initializer)
     })
 }
 
-/// OpenFlags for a read-write database
 pub fn read_write_flags() -> OpenFlags {
     OpenFlags::SQLITE_OPEN_URI
         | OpenFlags::SQLITE_OPEN_NO_MUTEX
@@ -133,7 +94,6 @@ pub fn read_write_flags() -> OpenFlags {
         | OpenFlags::SQLITE_OPEN_READ_WRITE
 }
 
-/// OpenFlags for a read-only database
 pub fn read_only_flags() -> OpenFlags {
     OpenFlags::SQLITE_OPEN_URI | OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_READ_ONLY
 }
@@ -143,7 +103,6 @@ fn do_open_database_with_flags<CI: ConnectionInitializer, P: AsRef<Path>>(
     open_flags: OpenFlags,
     connection_initializer: &CI,
 ) -> Result<Connection> {
-    // Try running the migration logic with an existing file
     debug!("{}: opening database", CI::NAME);
     let mut conn = Connection::open_with_flags(path, open_flags)?;
     debug!("{}: checking if initialization is necessary", CI::NAME);
@@ -155,7 +114,6 @@ fn do_open_database_with_flags<CI: ConnectionInitializer, P: AsRef<Path>>(
     if open_flags.contains(OpenFlags::SQLITE_OPEN_READ_WRITE) {
         let mut write_schema_version = true;
         if db_empty {
-            // Need to run this before starting a transaction, since it executes VACUUM.
             init_for_maintenance(&conn)?;
         }
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -187,8 +145,6 @@ fn do_open_database_with_flags<CI: ConnectionInitializer, P: AsRef<Path>>(
         }
         tx.commit()?;
     } else {
-        // There's an implied requirement that the first connection to a DB is
-        // writable, so read-only connections do much less, but panic if stuff is wrong
         assert!(!db_empty, "existing writer must have initialized");
         assert!(
             get_schema_version(&conn)? == CI::END_VERSION,
@@ -209,26 +165,12 @@ pub fn open_memory_database_with_flags<CI: ConnectionInitializer>(
 }
 
 fn init_for_maintenance(conn: &Connection) -> Result<()> {
-    // Enable incremental auto-vacuum.  This stores some additional data to enable auto-vacuum,
-    // but requires an explicit `PRAGMA incremental_vacuum` to be run rather than auto-vacuuming
-    // after each transaction.  The `run_maintenance()` function performs an auto-vacuum.
-    //
-    // This is generally the best setting for components.  Even if you're not calling
-    // `run_maintenance()` now, it's worth it to collect the data to avoid needing a full vacuum
-    // when you do.
     conn.execute_one("PRAGMA auto_vacuum=incremental")?;
-    // Also call `VACUUM` to ensure the previous PRAGMA takes effect.
-    // This is not needed for a fresh database with 0 tables, which is probably what we have now.
-    // However, VACUUM will be a no-op in that case anyways.
+
     conn.execute_one("VACUUM")?;
     Ok(())
 }
 
-// Attempt to handle failure when opening the database.
-//
-// Returns:
-//   - Ok(()) the failure is potentially handled and we should make a second open attempt
-//   - Err(e) the failure couldn't be handled and we should return this error
 fn try_handle_db_failure<CI: ConnectionInitializer, P: AsRef<Path>>(
     path: P,
     open_flags: OpenFlags,
@@ -259,9 +201,7 @@ fn try_handle_db_failure<CI: ConnectionInitializer, P: AsRef<Path>>(
             "{}: the database is fatally damaged; deleting and starting fresh",
             CI::NAME
         );
-        // Note we explicitly decline to move the path to, say ".corrupt", as it's difficult to
-        // identify any value there - actually getting our hands on the file from a mobile device
-        // is tricky and it would just take up disk space forever.
+
         if let Err(io_err) = std::fs::remove_file(path) {
             return Err(Error::RecoveryError(io_err));
         }
@@ -285,9 +225,6 @@ fn set_schema_version(conn: &Connection, version: u32) -> Result<()> {
     Ok(())
 }
 
-// Get a unique in-memory database path
-//
-// This can be very useful for testing.
 pub fn unique_in_memory_db_path() -> String {
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
     format!(
@@ -296,7 +233,6 @@ pub fn unique_in_memory_db_path() -> String {
     )
 }
 
-// В application-services модуль открыт для тестов других крейтов; здесь он нужен только тестам.
 #[cfg(test)]
 pub mod test_utils {
     use super::*;
@@ -373,8 +309,6 @@ pub mod test_utils {
 
         fn upgrade_from(&self, conn: &Transaction<'_>, version: u32) -> Result<()> {
             match version {
-                // This upgrade forces the database to be replaced by returning
-                // `Error::Corrupt`.
                 1 => {
                     self.push_call("upgrade_from_v1");
                     Err(Error::Corrupt)
@@ -419,14 +353,7 @@ pub mod test_utils {
         }
     }
 
-    // Database file that we can programmatically run upgrades on
-    //
-    // We purposefully don't keep a connection to the database around to force upgrades to always
-    // run against a newly opened DB, like they would in the real world.  See #4106 for
-    // details.
     pub struct MigratedDatabaseFile<CI: ConnectionInitializer> {
-        // Keep around a TempDir to ensure the database file stays around until this struct is
-        // dropped
         _tempdir: TempDir,
         pub connection_initializer: CI,
         pub path: PathBuf,
@@ -453,9 +380,6 @@ pub mod test_utils {
             }
         }
 
-        /// Attempt to run all upgrades up to a specific version.
-        ///
-        /// This will result in a panic if an upgrade fails to run.
         pub fn upgrade_to(&self, version: u32) {
             let mut conn = self.open();
             let tx = conn.transaction().unwrap();
@@ -471,9 +395,6 @@ pub mod test_utils {
             tx.commit().unwrap();
         }
 
-        /// Attempt to run all upgrades
-        ///
-        /// This will result in a panic if an upgrade fails to run.
         pub fn run_all_upgrades(&self) {
             let current_version = get_schema_version(&self.open()).unwrap();
             for version in current_version..CI::END_VERSION {
@@ -504,7 +425,6 @@ pub mod test_utils {
 
     fn get_sql(conn: &Connection, type_: &str) -> HashMap<String, Option<String>> {
         conn.query_rows_and_then(
-            // Ignore stat tables, which only get created if an ANALYZE ran
             "SELECT name, sql FROM sqlite_master
              WHERE type = ? AND name NOT LIKE 'sqlite_stat%'",
             (type_,),
@@ -540,8 +460,6 @@ pub mod test_utils {
         }
     }
 
-    /// Normalize SQL code by dropping comments and removing all whitespace which isn't
-    /// syntactically meaningful.
     fn normalize(sql: &str) -> String {
         const PUNCTUATION: [char; 3] = ['(', ')', ','];
         let mut normalized = String::with_capacity(sql.len());
@@ -551,9 +469,6 @@ pub mod test_utils {
 
         while let Some(c) = chars.next() {
             if in_string {
-                // SQLite uses a double quote (`''`) as the escape, which doesn't need
-                // special handling here.  We'll end up toggling in_string off and on
-                // again, but still output the same characters.
                 in_string = c != '\'';
             } else if c == '-' && chars.peek() == Some(&'-') {
                 while chars.next_if(|&c| c != '\n').is_some() {}
@@ -562,7 +477,6 @@ pub mod test_utils {
                 pending_space = true;
                 continue;
             } else {
-                // Only output a pending space if it's syntactically meaningful
                 if pending_space
                     && !normalized.is_empty()
                     && !PUNCTUATION.contains(&c)
@@ -616,14 +530,11 @@ mod test {
     use super::*;
     use std::io::Write;
 
-    // A special schema used to test the upgrade that forces the database to be
-    // replaced.
     static INIT_V1: &str = "
         CREATE TABLE prep_table(col);
         PRAGMA user_version=1;
     ";
 
-    // Initialize the database to v2 to test upgrading from there
     static INIT_V2: &str = "
         CREATE TABLE prep_table(col);
         INSERT INTO prep_table(col) VALUES ('correct-value');
@@ -696,8 +607,7 @@ mod test {
             .unwrap();
 
         open_database(db_file.path.clone(), &db_file.connection_initializer).unwrap_err();
-        // Even though the upgrades failed, the data should still be there.  The changes that
-        // upgrade_to_v3 made should have been rolled back.
+
         assert_eq!(
             db_file
                 .open()
@@ -724,8 +634,7 @@ mod test {
             open_database(db_file.path.clone(), &db_file.connection_initializer,),
             Err(Error::IncompatibleVersion(5))
         ));
-        // Make sure that even when DeleteAndRecreate is specified, we don't delete the database
-        // file when the schema is newer
+
         assert_eq!(
             db_file
                 .open()
@@ -740,17 +649,14 @@ mod test {
         let tempdir = tempfile::tempdir().unwrap();
         let path = tempdir.path().join(Path::new("corrupt-db.sql"));
         let mut file = std::fs::File::create(path.clone()).unwrap();
-        // interestingly, sqlite seems to treat a 0-byte file as a missing one.
-        // Note that this will exercise the `ErrorCode::NotADatabase` error code. It's not clear
-        // how we could hit `ErrorCode::DatabaseCorrupt`, but even if we could, there's not much
-        // value as this test can't really observe which one it was.
+
         file.write_all(b"not sql").unwrap();
         let metadata = std::fs::metadata(path.clone()).unwrap();
         assert_eq!(metadata.len(), 7);
         drop(file);
         open_database(path.clone(), &TestConnectionInitializer::new()).unwrap();
         let metadata = std::fs::metadata(path).unwrap();
-        // just check the file is no longer what it was before.
+
         assert_ne!(metadata.len(), 7);
     }
 

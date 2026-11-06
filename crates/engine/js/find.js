@@ -1,7 +1,3 @@
-// Поиск на странице для Klin. В Servo нет window.find и CSS Custom Highlight API, поэтому
-// совпадения ищутся обходом текстовых узлов, а текущее выделяется через Selection.
-// Скрипт выполняется в странице (изолированных миров в Servo нет), состояние хранится
-// под Symbol.for("klin.find"). Возвращает JSON: {current, total, wrapped}.
 ((query, caseSensitive, wholeWord, direction) => {
   const KEY = Symbol.for("klin.find");
   const selection = window.getSelection();
@@ -41,8 +37,7 @@
     const norm = (s) => (caseSensitive ? s : s.toLowerCase());
     const haystack = norm(text);
     const needle = norm(query);
-    // toLowerCase может изменить длину строки для редких символов; тогда совпадения
-    // соотносим с исходным текстом без нормализации.
+
     const sameLength = haystack.length === text.length;
     const source = sameLength ? haystack : text;
     const wordChar = /[\p{L}\p{N}_]/u;
@@ -102,8 +97,7 @@
     selection.removeAllRanges();
     selection.addRange(range);
   }
-  // Прокрутить так, чтобы совпадение было посередине окна. scrollIntoView({block: "center"})
-  // в Servo центрирует неточно, поэтому считаем сами по прямоугольнику элемента.
+
   const el = m.sn.parentElement;
   if (el) {
     const r = el.getBoundingClientRect();

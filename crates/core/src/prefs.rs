@@ -1,27 +1,21 @@
-//! Настройки браузера. Имена и значения по умолчанию — из Firefox (about:config).
-//! Формат prefs.js будет перенесён в 0.2 вместе с about:preferences.
-
-/// `browser.startup.homepage`
 pub const HOMEPAGE: &str = "about:home";
-/// Адрес новой вкладки (`browser.newtab.url` в старых версиях Firefox; сейчас — about:newtab).
+
 pub const NEW_TAB_URL: &str = "about:newtab";
-/// `browser.sessionstore.max_tabs_undo`
+
 pub const MAX_TABS_UNDO: usize = 25;
-/// `browser.tabs.closeWindowWithLastTab`
+
 pub const CLOSE_WINDOW_WITH_LAST_TAB: bool = true;
-/// `browser.tabs.insertRelatedAfterCurrent`
+
 pub const INSERT_RELATED_AFTER_CURRENT: bool = true;
-/// `browser.zoom.siteSpecific`
+
 pub const ZOOM_SITE_SPECIFIC: bool = true;
-/// `browser.sessionstore.interval`, мс
+
 pub const SESSIONSTORE_INTERVAL_MS: u64 = 15_000;
 
-/// `browser.startup.page`: 0 — пустая страница, 1 — домашняя, 3 — предыдущая сессия.
 pub const STARTUP_PAGE: &str = "browser.startup.page";
-/// `browser.sessionstore.resume_from_crash`
+
 pub const RESUME_FROM_CRASH: &str = "browser.sessionstore.resume_from_crash";
 
-/// Значение настройки из `prefs.js`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PrefValue {
     Bool(bool),
@@ -29,16 +23,12 @@ pub enum PrefValue {
     String(String),
 }
 
-/// Настройки пользователя из `prefs.js` и `user.js` (формат Firefox: `user_pref("имя", значение);`).
-/// Перенос разбора из `modules/libpref/parser` (MPL 2.0), упрощённый: без `sticky_pref`
-/// и атрибутов `locked`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct UserPrefs {
     values: std::collections::HashMap<String, PrefValue>,
 }
 
 impl UserPrefs {
-    /// Разобрать файлы по порядку; поздние значения перекрывают ранние (`user.js` после `prefs.js`).
     pub fn parse_files(texts: &[&str]) -> Self {
         let mut prefs = Self::default();
         for text in texts {
@@ -67,12 +57,10 @@ impl UserPrefs {
         }
     }
 
-    /// `browser.startup.page` (по умолчанию в Firefox — 1, домашняя страница).
     pub fn startup_page(&self) -> i64 {
         self.int(STARTUP_PAGE, 1)
     }
 
-    /// `browser.sessionstore.resume_from_crash` (по умолчанию — true).
     pub fn resume_from_crash(&self) -> bool {
         self.bool(RESUME_FROM_CRASH, true)
     }
@@ -83,7 +71,6 @@ fn parse(text: &str) -> Vec<(String, PrefValue)> {
     let mut out = Vec::new();
     let mut rest = text.as_str();
     while let Some(start) = rest.find("pref(") {
-        // Принимаются pref(, user_pref( и sticky_pref(.
         let call = &rest[start + 5..];
         let Some(end) = call.find(");") else { break };
         let args = &call[..end];
@@ -143,7 +130,6 @@ fn strip_comments(text: &str) -> String {
     out
 }
 
-/// `"имя", значение` → (имя, значение).
 fn split_args(args: &str) -> Option<(String, &str)> {
     let args = args.trim();
     let (name, after) = parse_string(args)?;

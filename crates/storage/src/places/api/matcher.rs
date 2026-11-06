@@ -11,7 +11,6 @@ use rusqlite::Row;
 use serde_derive::*;
 use url::Url;
 
-// A helper to log, cache and execute a query, returning a vector of flattened rows.
 fn query_flat_rows_and_then<T, F, P>(
     conn: &PlacesDb,
     sql: &str,
@@ -43,28 +42,11 @@ pub struct SearchParams {
     pub limit: u32,
 }
 
-/// Synchronously queries all providers for autocomplete matches, then filters
-/// the matches. This isn't cancelable yet; once a search is started, it can't
-/// be interrupted, even if the user moves on (see
-/// https://github.com/mozilla/application-services/issues/265).
-///
-/// A provider can be anything that returns URL suggestions: Places history
-/// and bookmarks, synced tabs, search engine suggestions, and search keywords.
 pub fn search_frecent(conn: &PlacesDb, params: SearchParams) -> Result<Vec<SearchResult>> {
-    // TODO: Tokenize the query.
-
-    // Try to find the first heuristic result. Desktop tries extensions,
-    // search engine aliases, origins, URLs, search engine domains, and
-    // preloaded sites, before trying to fall back to fixing up the URL,
-    // and a search if all else fails. We only try origins and URLs for
-    // heuristic matches, since that's all we support.
-
     let mut matches = match_with_limit(
         conn,
         &[
-            // Try to match on the origin, or the full URL.
             &OriginOrUrl::new(&params.search_string),
-            // query adaptive matches and suggestions, matching Anywhere.
             &Adaptive::with_behavior(
                 &params.search_string,
                 MatchBehavior::Anywhere,
@@ -88,11 +70,10 @@ pub fn search_frecent(conn: &PlacesDb, params: SearchParams) -> Result<Vec<Searc
 pub fn match_url(conn: &PlacesDb, query: impl AsRef<str>) -> Result<Option<Url>> {
     let scope = conn.begin_interrupt_scope()?;
     let matcher = OriginOrUrl::new(query.as_ref());
-    // Note: The matcher ignores the limit argument (it's a trait method)
+
     let results = matcher.search(conn, 1)?;
     scope.err_if_interrupted()?;
-    // Doing it like this lets us move the result, avoiding a copy (which almost
-    // certainly doesn't matter but whatever)
+
     if let Some(res) = results.into_iter().next() {
         Ok(Some(res.url))
     } else {
@@ -120,10 +101,7 @@ fn match_with_limit(
     Ok(results)
 }
 
-/// Records an accepted autocomplete match, recording the query string,
-/// and chosen URL for subsequent matches.
 pub fn accept_result(conn: &PlacesDb, search_string: &str, url: &Url) -> Result<()> {
-    // See `nsNavHistory::AutoCompleteFeedback`.
     conn.execute(
         "INSERT OR REPLACE INTO moz_inputhistory(place_id, input, use_count)
          SELECT h.id, IFNULL(i.input, :input_text), IFNULL(i.use_count, 0) * .9 + 1
@@ -140,7 +118,6 @@ pub fn accept_result(conn: &PlacesDb, search_string: &str, url: &Url) -> Result<
 }
 
 pub fn split_after_prefix(href: &str) -> (&str, &str) {
-    // Only search up to 64 bytes (matches desktop behavior)
     let haystack = &href.as_bytes()[..href.len().min(64)];
     match memchr::memchr(b':', haystack) {
         None => ("", href),
@@ -171,8 +148,6 @@ pub fn split_after_host_and_port(href: &str) -> (&str, &str) {
 }
 
 fn looks_like_origin(string: &str) -> bool {
-    // Skip nonascii characters, we'll either handle them in autocomplete_match or,
-    // a later part of the origins query.
     !string.is_empty()
         && !string.bytes().any(|c| {
             !c.is_ascii() || c.is_ascii_whitespace() || c == b'/' || c == b'?' || c == b'#'
@@ -181,28 +156,15 @@ fn looks_like_origin(string: &str) -> bool {
 
 #[derive(Debug, Clone, Serialize, Eq, PartialEq)]
 pub struct SearchResult {
-    /// The search string for this match.
     pub search_string: String,
-
-    /// The URL to open when the user confirms a match. This is
-    /// equivalent to `nsIAutoCompleteResult.getFinalCompleteValueAt`.
     pub url: Url,
-
-    /// The title of the autocompleted value, to show in the UI. This can be the
-    /// title of the bookmark or page, origin, URL, or URL fragment.
     pub title: String,
-
-    /// The favicon URL.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon_url: Option<Url>,
-
-    /// A frecency score for this match.
     pub frecency: i64,
 }
 
 impl SearchResult {
-    /// Default search behaviors from Desktop: HISTORY, BOOKMARK, OPENPAGE, SEARCHES.
-    /// Default match behavior: MATCH_BOUNDARY_ANYWHERE.
     pub fn from_adaptive_row(row: &rusqlite::Row<'_>) -> Result<Self> {
         let search_string = row.get::<_, String>("searchString")?;
         let _place_id = row.get::<_, i64>("id")?;
@@ -394,11 +356,7 @@ impl Matcher for OriginOrUrl<'_> {
             )?
         } else if self.query.contains(['/', ':', '?']) {
             let (host, remainder) = split_after_host_and_port(self.query);
-            // This can fail if the "host" has some characters that are not
-            // currently allowed in URLs (even when punycoded). If that happens,
-            // then the query we'll use here can't return any results (and
-            // indeed, `reverse_host` will get mad at us since it's an invalid
-            // host), so we just return an empty results set.
+
             let punycode_host = idna::domain_to_ascii(host);
             let host_str = if let Ok(host) = &punycode_host {
                 host.as_str()
@@ -717,7 +675,6 @@ mod tests {
         assert!(
             by_url_without_path
                 .iter()
-                // Should we consider un-punycoding the title? (firefox desktop doesn't...)
                 .any(|result| result.title == "xn--exmple-cua.com/"
                     && result.url.as_str() == "http://xn--exmple-cua.com/")
         );
@@ -739,12 +696,10 @@ mod tests {
             by_url_with_path
         );
 
-        // The "ball of yarn" emoji is not currently accepted as valid
-        // in URLs, but we should just return an empty result set.
         let ball_of_yarn_about_blank = "about:blank🧶";
         let empty = match_url(&conn, ball_of_yarn_about_blank).unwrap();
         assert!(empty.is_none());
-        // Just run this to make sure the unwrap doesn't panic us
+
         search_frecent(
             &conn,
             SearchParams {
@@ -754,9 +709,7 @@ mod tests {
         )
         .unwrap();
     }
-    // This panics in tests but not for "real" consumers. In an effort to ensure
-    // we are panicking where we think we are, note the 'expected' string.
-    // (Not really clear this test offers much value, but seems worth having...)
+
     #[test]
     #[cfg_attr(
         debug_assertions,

@@ -2,9 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-// A "storage" module - this module is intended to be the layer between the
-// API and the database.
-
 pub mod bookmarks;
 pub mod history;
 pub mod history_metadata;
@@ -27,20 +24,16 @@ use serde_derive::*;
 use std::fmt;
 use url::Url;
 
-/// From https://searchfox.org/mozilla-central/rev/93905b660f/toolkit/components/places/PlacesUtils.jsm#189
 pub const URL_LENGTH_MAX: usize = 65536;
 pub const TITLE_LENGTH_MAX: usize = 4096;
 pub const TAG_LENGTH_MAX: usize = 100;
-// pub const DESCRIPTION_LENGTH_MAX: usize = 256;
 
-// Typesafe way to manage RowIds. Does it make sense? A better way?
 #[derive(
     Debug, Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Deserialize, Serialize, Default, Hash,
 )]
 pub struct RowId(pub i64);
 
 impl From<RowId> for i64 {
-    // XXX - ToSql!
     #[inline]
     fn from(id: RowId) -> Self {
         id.0
@@ -98,18 +91,15 @@ impl PageInfo {
                 None => None,
             },
             typed: row.get("typed")?,
-
             frecency: row.get("frecency")?,
             visit_count_local: row.get("visit_count_local")?,
             visit_count_remote: row.get("visit_count_remote")?,
-
             last_visit_date_local: row
                 .get::<_, Option<Timestamp>>("last_visit_date_local")?
                 .unwrap_or_default(),
             last_visit_date_remote: row
                 .get::<_, Option<Timestamp>>("last_visit_date_remote")?
                 .unwrap_or_default(),
-
             sync_status: SyncStatus::from_u8(row.get::<_, u8>("sync_status")?),
             sync_change_counter: row
                 .get::<_, Option<u32>>("sync_change_counter")?
@@ -122,12 +112,9 @@ impl PageInfo {
     }
 }
 
-// fetch_page_info gives you one of these.
 #[derive(Debug)]
 pub struct FetchedPageInfo {
     pub page: PageInfo,
-    // XXX - not clear what this is used for yet, and whether it should be local, remote or either?
-    // The sql below isn't quite sure either :)
     pub last_visit_id: Option<RowId>,
 }
 
@@ -140,7 +127,6 @@ impl FetchedPageInfo {
     }
 }
 
-// History::FetchPageInfo
 pub fn fetch_page_info(db: &PlacesDb, url: &Url) -> Result<Option<FetchedPageInfo>> {
     let sql = "
       SELECT guid, url, id, title, hidden, typed, frecency,
@@ -169,7 +155,6 @@ fn new_page_info(db: &PlacesDb, url: &Url, new_guid: Option<SyncGuid>) -> Result
     };
     let url_str = url.as_str();
     if url_str.len() > URL_LENGTH_MAX {
-        // Generally callers check this first (bookmarks don't, history does).
         return Err(Error::InvalidPlaceInfo(InvalidPlaceInfo::UrlTooLong));
     }
     let sql = "INSERT INTO moz_places (guid, url, url_hash)
@@ -180,7 +165,7 @@ fn new_page_info(db: &PlacesDb, url: &Url, new_guid: Option<SyncGuid>) -> Result
         guid,
         row_id: RowId(db.conn().last_insert_rowid()),
         title: "".into(),
-        hidden: true, // will be set to false as soon as a non-hidden visit appears.
+        hidden: true,
         preview_image_url: None,
         typed: 0,
         frecency: -1,
@@ -196,11 +181,8 @@ fn new_page_info(db: &PlacesDb, url: &Url, new_guid: Option<SyncGuid>) -> Result
 
 impl HistoryVisitInfo {
     fn from_row(row: &rusqlite::Row<'_>) -> Result<Self> {
-        let visit_type = VisitType::from_primitive(row.get::<_, u8>("visit_type")?)
-            // Do we have an existing error we use for this? For now they
-            // probably don't care too much about VisitType, so this
-            // is fine.
-            .unwrap_or(VisitType::Link);
+        let visit_type =
+            VisitType::from_primitive(row.get::<_, u8>("visit_type")?).unwrap_or(VisitType::Link);
         let visit_date: Timestamp = row.get("visit_date")?;
         let url: String = row.get("url")?;
         let preview_image_url: Option<String> = row.get("preview_image_url")?;
@@ -229,17 +211,6 @@ impl TopFrecentSiteInfo {
     }
 }
 
-/// Run maintenance on the places DB (prune step)
-///
-/// The `run_maintenance_*()` functions are intended to be run during idle time and will take steps
-/// to clean up / shrink the database.  They're split up so that we can time each one in the
-/// Kotlin wrapper code (This is needed because we only have access to the Glean API in Kotlin and
-/// it supports a stop-watch style API, not recording specific values).
-///
-/// db_size_limit is the approximate storage limit in bytes.  If the database is using more space
-/// than this, some older visits will be deleted to free up space.  Pass in a 0 to skip this.
-///
-/// prune_limit is the maximum number of visits to prune if the database is over db_size_limit
 pub fn run_maintenance_prune(conn: &PlacesDb, db_size_limit: u32, prune_limit: u32) -> Result<()> {
     let db_size_before = conn.get_db_size()?;
     let should_prune = db_size_limit > 0 && db_size_before > db_size_limit;
@@ -249,38 +220,16 @@ pub fn run_maintenance_prune(conn: &PlacesDb, db_size_limit: u32, prune_limit: u
     Ok(())
 }
 
-/// Run maintenance on the places DB (vacuum step)
-///
-/// The `run_maintenance_*()` functions are intended to be run during idle time and will take steps
-/// to clean up / shrink the database.  They're split up so that we can time each one in the
-/// Kotlin wrapper code (This is needed because we only have access to the Glean API in Kotlin and
-/// it supports a stop-watch style API, not recording specific values).
 pub fn run_maintenance_vacuum(conn: &PlacesDb) -> Result<()> {
     crate::support::sql::maintenance::vacuum(conn)?;
     Ok(())
 }
 
-/// Run maintenance on the places DB (optimize step)
-///
-/// The `run_maintenance_*()` functions are intended to be run during idle time and will take steps
-/// to clean up / shrink the database.  They're split up so that we can time each one in the
-/// Kotlin wrapper code (This is needed because we only have access to the Glean API in Kotlin and
-/// it supports a stop-watch style API, not recording specific values).
 pub fn run_maintenance_optimize(conn: &PlacesDb) -> Result<()> {
-    // 0x10012: run ANALYZE on tables that might benefit (0x02), with a row limit to keep
-    // runtime bounded (0x10), including tables not queried during this connection (0x10000).
-    // The 0x10000 bit lets maintenance refresh stats for tables the writer never queries;
-    // desktop added this alongside the Bug 2017227 shutdown fix.
     conn.execute_one("PRAGMA optimize(0x10012)")?;
     Ok(())
 }
 
-/// Run maintenance on the places DB (checkpoint step)
-///
-/// The `run_maintenance_*()` functions are intended to be run during idle time and will take steps
-/// to clean up / shrink the database.  They're split up so that we can time each one in the
-/// Kotlin wrapper code (This is needed because we only have access to the Glean API in Kotlin and
-/// it supports a stop-watch style API, not recording specific values).
 pub fn run_maintenance_checkpoint(conn: &PlacesDb) -> Result<()> {
     conn.execute_one("PRAGMA wal_checkpoint(PASSIVE)")?;
     Ok(())
@@ -309,7 +258,7 @@ pub fn update_all_frecencies_at_once(db: &PlacesDb, scope: &SqlInterruptScope) -
     if frecencies.is_empty() {
         return Ok(());
     }
-    // Update all frecencies in one fell swoop
+
     tx.execute_batch(&format!(
         "WITH frecencies(id, frecency) AS (
             VALUES {}
@@ -326,7 +275,6 @@ pub fn update_all_frecencies_at_once(db: &PlacesDb, scope: &SqlInterruptScope) -
 
     scope.err_if_interrupted()?;
 
-    // ...And remove them from the stale table.
     tx.execute_batch(&format!(
         "DELETE FROM moz_places_stale_frecencies
          WHERE place_id IN ({})",
@@ -362,7 +310,6 @@ pub(crate) fn delete_meta(db: &PlacesDb, key: &str) -> Result<()> {
     Ok(())
 }
 
-/// Delete all items in the temp tables we use for staging changes.
 pub fn delete_pending_temp_tables(conn: &PlacesDb) -> Result<()> {
     conn.execute_batch(
         "DELETE FROM moz_updateoriginsinsert_temp;
@@ -409,15 +356,6 @@ mod tests {
         delete_meta(&conn, "foo").expect("delete non-existing should work");
     }
 
-    // Here we try and test that we replicate desktop behaviour, which isn't that obvious.
-    // * create a bookmark
-    // * remove the bookmark - this doesn't remove the place or origin - probably because in
-    //   real browsers there will be visits for the URL existing, but this still smells like
-    //   a bug - see https://bugzilla.mozilla.org/show_bug.cgi?id=1650511#c34
-    // * Arrange for history for that item to be removed, via various means
-    // At this point the origin and place should be removed. The only code (in desktop and here) which
-    // removes places with a foreign_count of zero is that history removal!
-
     #[test]
     fn test_removal_delete_visits_between() {
         do_test_removal_places_and_origins(|conn: &PlacesDb, _guid: &SyncGuid| {
@@ -455,7 +393,6 @@ mod tests {
         })
     }
 
-    // The core test - takes a function which deletes history.
     fn do_test_removal_places_and_origins<F>(removal_fn: F)
     where
         F: FnOnce(&PlacesDb, &SyncGuid) -> Result<()>,
@@ -477,19 +414,19 @@ mod tests {
             conn.conn_ext_query_one::<i64>("SELECT COUNT(*) FROM moz_bookmarks;")
                 .unwrap(),
             5
-        ); // our 5 roots.
+        );
         let bookmark_guid = insert_bookmark(&conn, bm).unwrap();
         let place_guid = fetch_page_info(&conn, &url)
             .expect("should work")
             .expect("must exist")
             .page
             .guid;
-        // the place should exist with a foreign_count of 1.
+
         assert_eq!(
             conn.conn_ext_query_one::<i64>("SELECT COUNT(*) FROM moz_bookmarks;")
                 .unwrap(),
             6
-        ); // our 5 roots + new bookmark
+        );
         assert_eq!(
             conn.conn_ext_query_one::<i64>(
                 "SELECT foreign_count FROM moz_places WHERE url = \"http://example.com/foo\";"
@@ -497,7 +434,7 @@ mod tests {
             .unwrap(),
             1
         );
-        // visit the bookmark.
+
         assert!(
             apply_observation(
                 &conn,
@@ -514,8 +451,8 @@ mod tests {
             conn.conn_ext_query_one::<i64>("SELECT COUNT(*) FROM moz_bookmarks;")
                 .unwrap(),
             5
-        ); // our 5 roots
-        // the place should have no foreign references, but still exists.
+        );
+
         assert_eq!(
             conn.conn_ext_query_one::<i64>(
                 "SELECT foreign_count FROM moz_places WHERE url = \"http://example.com/foo\";"
@@ -536,8 +473,6 @@ mod tests {
         );
     }
 
-    // Similar to the above, but if the bookmark has no visits the place/origin should die
-    // without requiring history removal
     #[test]
     fn test_visitless_removal_places_and_origins() {
         let conn = new_mem_connection();
@@ -557,14 +492,14 @@ mod tests {
             conn.conn_ext_query_one::<i64>("SELECT COUNT(*) FROM moz_bookmarks;")
                 .unwrap(),
             5
-        ); // our 5 roots.
+        );
         let bookmark_guid = insert_bookmark(&conn, bm).unwrap();
-        // the place should exist with a foreign_count of 1.
+
         assert_eq!(
             conn.conn_ext_query_one::<i64>("SELECT COUNT(*) FROM moz_bookmarks;")
                 .unwrap(),
             6
-        ); // our 5 roots + new bookmark
+        );
         assert_eq!(
             conn.conn_ext_query_one::<i64>(
                 "SELECT foreign_count FROM moz_places WHERE url = \"http://example.com/foo\";"
@@ -572,14 +507,14 @@ mod tests {
             .unwrap(),
             1
         );
-        // Delete it.
+
         delete_bookmark(&conn, &bookmark_guid).unwrap();
         assert_eq!(
             conn.conn_ext_query_one::<i64>("SELECT COUNT(*) FROM moz_bookmarks;")
                 .unwrap(),
             5
-        ); // our 5 roots
-        // should be gone from places and origins.
+        );
+
         assert_eq!(
             conn.conn_ext_query_one::<i64>("SELECT COUNT(*) FROM moz_places;")
                 .unwrap(),

@@ -1,6 +1,3 @@
-//! Минимальный INI в стиле Mozilla (`profiles.ini`, `installs.ini`): секции, `ключ=значение`,
-//! порядок сохраняется, комментарии `;` и `#` пропускаются.
-
 use std::fmt;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

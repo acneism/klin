@@ -1,10 +1,5 @@
-//! Адрес для показа в адресной строке — как в Firefox при `browser.urlbar.trimURLs`
-//! и `browser.urlbar.trimHttps`: схема http(s) и «/» у корня скрываются, а у страниц
-//! новой вкладки строка пустая.
-
 use klin_shared::Url;
 
-/// Страницы, на которых адресная строка пустая (в Firefox — `isInitialPage`).
 const INITIAL_PAGES: &[&str] = &["about:newtab", "about:home", "about:blank"];
 
 pub fn display_url(url: &Url) -> String {
@@ -23,7 +18,7 @@ pub fn display_url(url: &Url) -> String {
             } else {
                 rest
             };
-            // Не прячем схему, если без неё адрес прочтётся как поиск или другой адрес.
+
             if rest.contains(' ') {
                 s.to_owned()
             } else {

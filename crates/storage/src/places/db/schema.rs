@@ -16,21 +16,17 @@ use super::db::{Pragma, PragmaGuard};
 
 pub const VERSION: u32 = 21;
 
-// Shared schema and temp tables for the read-write and Sync connections.
 const CREATE_SHARED_SCHEMA_SQL: &str = include_str!("../../../sql/places/create_shared_schema.sql");
 const CREATE_SHARED_TEMP_TABLES_SQL: &str =
     include_str!("../../../sql/places/create_shared_temp_tables.sql");
 
-// Sync-specific temp tables and triggers.
 const CREATE_SYNC_TEMP_TABLES_SQL: &str =
     include_str!("../../../sql/places/create_sync_temp_tables.sql");
 const CREATE_SYNC_TRIGGERS_SQL: &str = include_str!("../../../sql/places/create_sync_triggers.sql");
 
-// Triggers for the main read-write connection only.
 const CREATE_MAIN_TRIGGERS_SQL: &str = include_str!("../../../sql/places/create_main_triggers.sql");
 
 lazy_static::lazy_static! {
-    // Triggers for the read-write and Sync connections.
     static ref CREATE_SHARED_TRIGGERS_SQL: String = {
         format!(
             include_str!("../../../sql/places/create_shared_triggers.sql"),
@@ -40,12 +36,9 @@ lazy_static::lazy_static! {
     };
 }
 
-// Historical versions of the shared schema for migrations which apply it as
-// part of the migration operations.
 const CREATE_SHARED_SCHEMA_V20_SQL: &str =
     include_str!("../../../sql/places/legacy/create_shared_schema_v20.sql");
 
-// Keys in the moz_meta table.
 pub(crate) static MOZ_META_KEY_ORIGIN_FRECENCY_COUNT: &str = "origin_frecency_count";
 pub(crate) static MOZ_META_KEY_ORIGIN_FRECENCY_SUM: &str = "origin_frecency_sum";
 pub(crate) static MOZ_META_KEY_ORIGIN_FRECENCY_SUM_OF_SQUARES: &str =
@@ -88,22 +81,14 @@ pub fn init(conn: &Connection) -> rusqlite::Result<()> {
 
 pub fn finish(db: &Connection, conn_type: ConnectionType) -> rusqlite::Result<()> {
     match conn_type {
-        // Read-only connections don't need temp tables or triggers, as they
-        // can't write anything.
         ConnectionType::ReadOnly => {}
 
-        // The main read-write connection needs shared and main-specific
-        // temp tables and triggers (for example, for writing tombstones).
         ConnectionType::ReadWrite => {
-            // Every writable connection needs these...
             db.execute_batch(CREATE_SHARED_TEMP_TABLES_SQL)?;
             db.execute_batch(&CREATE_SHARED_TRIGGERS_SQL)?;
             db.execute_batch(CREATE_MAIN_TRIGGERS_SQL)?;
         }
 
-        // The Sync connection needs shared and its own temp tables and
-        // triggers, for merging. It also bypasses some of the main
-        // triggers, so that we don't write tombstones for synced deletions.
         ConnectionType::Sync => {
             db.execute_batch(CREATE_SHARED_TEMP_TABLES_SQL)?;
             db.execute_batch(&CREATE_SHARED_TRIGGERS_SQL)?;
@@ -115,18 +100,6 @@ pub fn finish(db: &Connection, conn_type: ConnectionType) -> rusqlite::Result<()
     Ok(())
 }
 
-/// Helper for migration - pre-dates MigrationLogic, hence it has slightly strange wiring.
-/// Intended use:
-///
-/// ```rust,ignore
-/// migration(db, cur_ver, 2, &[stuff, to, migrate, version2, to, version3], || Ok(()))?;
-/// migration(db, cur_ver, 3, &[stuff, to, migrate, version3, to, version4], || Ok(()))?;
-/// migration(db, cur_ver, 4, &[stuff, to, migrate, version4, to, version5], || Ok(()))?;
-/// ```
-///
-/// The callback parameter is if any extra logic is needed for the migration
-/// (for example, creating bookmark roots). In an ideal world, this would be an
-/// Option, but sadly, that can't typecheck.
 fn migration<F>(
     db: &Connection,
     cur_version: u32,
@@ -150,30 +123,22 @@ where
 pub fn upgrade_from(db: &Connection, from: u32) -> rusqlite::Result<()> {
     debug!("Upgrading schema from {} to {}", from, VERSION);
 
-    // Old-style migrations
-
     migration(db, from, 2, &[CREATE_SHARED_SCHEMA_V20_SQL], || Ok(()))?;
     migration(
         db,
         from,
         3,
-        &[
-            // Previous versions had an incomplete version of moz_bookmarks.
-            "DROP TABLE moz_bookmarks",
-            CREATE_SHARED_SCHEMA_V20_SQL,
-        ],
+        &["DROP TABLE moz_bookmarks", CREATE_SHARED_SCHEMA_V20_SQL],
         || create_bookmark_roots(db.conn()),
     )?;
     migration(db, from, 4, &[CREATE_SHARED_SCHEMA_V20_SQL], || Ok(()))?;
-    migration(db, from, 5, &[CREATE_SHARED_SCHEMA_V20_SQL], || Ok(()))?; // new tags tables.
-    migration(db, from, 6, &[CREATE_SHARED_SCHEMA_V20_SQL], || Ok(()))?; // bookmark syncing.
+    migration(db, from, 5, &[CREATE_SHARED_SCHEMA_V20_SQL], || Ok(()))?;
+    migration(db, from, 6, &[CREATE_SHARED_SCHEMA_V20_SQL], || Ok(()))?;
     migration(
         db,
         from,
         7,
         &[
-            // Changing `moz_bookmarks_synced_structure` to store multiple
-            // parents, so we need to re-download all synced bookmarks.
             &format!("DELETE FROM moz_meta WHERE key = '{}'", LAST_SYNC_META_KEY),
             "DROP TABLE moz_bookmarks_synced",
             "DROP TABLE moz_bookmarks_synced_structure",
@@ -185,27 +150,20 @@ pub fn upgrade_from(db: &Connection, from: u32) -> rusqlite::Result<()> {
         db,
         from,
         8,
-        &[
-            // Bump change counter of New() items due to bookmarks `reset`
-            // setting the counter to 0 instead of 1 (#1145)
-            &format!(
-                "UPDATE moz_bookmarks
+        &[&format!(
+            "UPDATE moz_bookmarks
                  SET syncChangeCounter = syncChangeCounter + 1
                  WHERE syncStatus = {}",
-                SyncStatus::New as u8
-            ),
-        ],
+            SyncStatus::New as u8
+        )],
         || Ok(()),
     )?;
     migration(
         db,
         from,
         9,
-        &[
-            // Add an index for synced bookmark URLs.
-            "CREATE INDEX IF NOT EXISTS moz_bookmarks_synced_urls
-             ON moz_bookmarks_synced(placeId)",
-        ],
+        &["CREATE INDEX IF NOT EXISTS moz_bookmarks_synced_urls
+             ON moz_bookmarks_synced(placeId)"],
         || Ok(()),
     )?;
     migration(
@@ -213,19 +171,13 @@ pub fn upgrade_from(db: &Connection, from: u32) -> rusqlite::Result<()> {
         from,
         10,
         &[
-            // Add a new table to hold synced and migrated search keywords.
             "CREATE TABLE IF NOT EXISTS moz_keywords(
                  place_id INTEGER PRIMARY KEY REFERENCES moz_places(id)
                                   ON DELETE RESTRICT,
                  keyword TEXT NOT NULL UNIQUE
              )",
-            // Add an index on synced keywords, so that we can search for
-            // mismatched keywords without a table scan.
             "CREATE INDEX IF NOT EXISTS moz_bookmarks_synced_keywords
              ON moz_bookmarks_synced(keyword) WHERE keyword NOT NULL",
-            // Migrate synced keywords into their own table, so that they're
-            // available via `bookmarks_get_url_for_keyword` before the next
-            // sync.
             "INSERT OR IGNORE INTO moz_keywords(keyword, place_id)
              SELECT keyword, placeId
              FROM moz_bookmarks_synced
@@ -238,52 +190,35 @@ pub fn upgrade_from(db: &Connection, from: u32) -> rusqlite::Result<()> {
         db,
         from,
         11,
-        &[
-            // Greatly helps the multi-join query in frecency.
-            "CREATE INDEX IF NOT EXISTS visits_from_type_idx
-             ON moz_historyvisits(from_visit, visit_type)",
-        ],
+        &["CREATE INDEX IF NOT EXISTS visits_from_type_idx
+             ON moz_historyvisits(from_visit, visit_type)"],
         || Ok(()),
     )?;
     migration(
         db,
         from,
         12,
-        &[
-            // Reconciled items didn't end up with the correct syncStatus.
-            // See #3504
-            "UPDATE moz_bookmarks AS b
+        &["UPDATE moz_bookmarks AS b
              SET syncStatus = 2 -- SyncStatus::Normal
              WHERE EXISTS (SELECT 1 FROM moz_bookmarks_synced
-                                    WHERE guid = b.guid)",
-        ],
+                                    WHERE guid = b.guid)"],
         || Ok(()),
     )?;
-    migration(db, from, 13, &[CREATE_SHARED_SCHEMA_V20_SQL], || Ok(()))?; // moz_places_metadata.
+    migration(db, from, 13, &[CREATE_SHARED_SCHEMA_V20_SQL], || Ok(()))?;
     migration(
         db,
         from,
         14,
         &[
-            // Changing `moz_places_metadata` structure, drop and recreate it.
             "DROP TABLE moz_places_metadata",
             CREATE_SHARED_SCHEMA_V20_SQL,
         ],
         || Ok(()),
     )?;
 
-    // End of old style migrations, starting with the 15 -> 16 migration, we just use match
-    // statements
-
     match from {
-        // Skip the old style migrations
         n if n < 15 => (),
-        // New-style migrations start here
         15 => {
-            // Add the `unknownFields` column
-            //
-            // This migration was rolled out incorrectly and we need to check if it was already
-            // applied (https://github.com/mozilla/application-services/issues/5464)
             let exists_sql = "SELECT 1 FROM pragma_table_info('moz_bookmarks_synced') WHERE name = 'unknownFields'";
             let add_column_sql = "ALTER TABLE moz_bookmarks_synced ADD COLUMN unknownFields TEXT";
             if !db.exists(exists_sql, [])? {
@@ -291,7 +226,6 @@ pub fn upgrade_from(db: &Connection, from: u32) -> rusqlite::Result<()> {
             }
         }
         16 => {
-            // Add the `unknownFields` column for history
             db.execute("ALTER TABLE moz_places ADD COLUMN unknown_fields TEXT", ())?;
             db.execute(
                 "ALTER TABLE moz_historyvisits ADD COLUMN unknown_fields TEXT",
@@ -299,13 +233,6 @@ pub fn upgrade_from(db: &Connection, from: u32) -> rusqlite::Result<()> {
             )?;
         }
         17 => {
-            // Drop the CHECK and `FOREIGN KEY(parent)` constraints on
-            // `moz_bookmarks`; schemas >= 18 enforce constraints using
-            // TEMP triggers with more informative error messages.
-
-            // SQLite doesn't support `ALTER TABLE DROP CONSTRAINT`, so
-            // we rewrite the schema.
-
             const NEW_SQL: &str = "CREATE TABLE moz_bookmarks ( \
                 id INTEGER PRIMARY KEY, \
                 fk INTEGER DEFAULT NULL, \
@@ -328,36 +255,21 @@ pub fn upgrade_from(db: &Connection, from: u32) -> rusqlite::Result<()> {
                 "UPDATE sqlite_schema SET
                    sql = ?
                  WHERE type = 'table' AND name = 'moz_bookmarks'",
-                // _Must_ be valid SQL; updating `sqlite_schema.sql` with
-                // invalid SQL will corrupt the database.
                 rusqlite::params![NEW_SQL],
             )?;
         }
         18 => {
-            // Create the new indexes by just calling the shared schema file
-            // idx_places_outgoing_by_frecency
             db.execute_batch(CREATE_SHARED_SCHEMA_V20_SQL)?;
-            // Manually call analyze so the planner can start using the indexes immediately
+
             db.execute("ANALYZE moz_places", [])?;
         }
         19 => {
-            // Create the new indexes by just calling the shared schema file
-            // top_frecent_cover_idx, idx_visits_place_type
             db.execute_batch(CREATE_SHARED_SCHEMA_V20_SQL)?;
-            // Manually call analyze so the planner can start using the indexes immediately
+
             db.execute("ANALYZE moz_places", [])?;
             db.execute("ANALYZE moz_historyvisits", [])?;
         }
         20 => {
-            // Invert the moz_origins UNIQUE constraint to (host, prefix), so the
-            // higher cardinality column comes first and queries only filtering on
-            // host, like the address bar ones, can use the index.
-
-            // PRAGMA foreign_keys is a no-op inside the migration transaction,
-            // so dropping moz_origins to rebuild it would cascade to every
-            // page; we rewrite the stored schema in place instead.
-            // Must not change anything but the constraints; changing the column
-            // list will silently corrupt existing data.
             const NEW_SQL: &str = "CREATE TABLE moz_origins ( \
                 id INTEGER PRIMARY KEY, \
                 prefix TEXT NOT NULL, \
@@ -375,26 +287,18 @@ pub fn upgrade_from(db: &Connection, from: u32) -> rusqlite::Result<()> {
                     "UPDATE sqlite_schema SET
                        sql = ?
                      WHERE type = 'table' AND name = 'moz_origins'",
-                    // _Must_ be valid SQL; updating `sqlite_schema.sql` with
-                    // invalid SQL will corrupt the database.
                     rusqlite::params![NEW_SQL],
                 )?;
             }
 
-            // Reload the schema and rebuild the index with the new column order
             db.execute_one("PRAGMA writable_schema = RESET")?;
             db.execute("REINDEX moz_origins", [])?;
 
-            // Increment the schema version like an ALTER TABLE would, so that
-            // other connections reload the schema
             db.execute_one(&format!("PRAGMA schema_version = {}", schema_version + 1))?;
 
-            // Manually call analyze so the planner can start using the index immediately
             db.execute("ANALYZE moz_origins", [])?;
         }
-        // Add more migrations here...
 
-        // Any other from value indicates that something very wrong happened
         _ => panic!(
             "Places does not have a v{} -> v{} migration",
             from,
@@ -457,7 +361,6 @@ mod tests {
         )
         .expect("should work");
 
-        // should not have a tombstone.
         assert!(!has_tombstone(&conn, &guid));
     }
 
@@ -472,7 +375,6 @@ mod tests {
         )
         .expect("should work");
 
-        // insert into moz_places - the tombstone should be removed.
         conn.execute_cached(
             "INSERT INTO moz_places (guid, url, url_hash, sync_status)
              VALUES (:guid, :url, hash(:url), :sync_status)",
@@ -499,7 +401,6 @@ mod tests {
         )
         .expect("should insert page");
 
-        // type==BOOKMARK but null fk
         {
             let e = conn
                 .execute_cached(
@@ -540,7 +441,6 @@ mod tests {
             );
         }
 
-        // type!=BOOKMARK and non-null fk
         {
             let e = conn
                 .execute_cached(
@@ -581,7 +481,6 @@ mod tests {
             );
         }
 
-        // null parent for item other than the root
         {
             let e = conn
                 .execute_cached(
@@ -626,26 +525,8 @@ mod tests {
                 "Expected error, got: {:?}",
                 e,
             );
-
-            // Bug 1941655 - we only guard against NULL parents, not missing ones.
-            /*
-            let e = conn
-                .execute(
-                    "UPDATE moz_bookmarks SET
-                        parent = -1
-                     WHERE guid = 'folder_guid_'",
-                    [],
-                )
-                .expect_err("should fail to update folder with nonexistent parent");
-            assert!(
-                e.to_string().contains("update: item without parent"),
-                "Expected error, got: {:?}",
-                e,
-            );
-            */
         }
 
-        // Invalid length guid
         {
             let e = conn
                 .execute_cached(
@@ -677,7 +558,6 @@ mod tests {
             );
         }
 
-        // Changing the type of an existing item.
         {
             let e = conn
                 .execute(
@@ -714,7 +594,6 @@ mod tests {
 
     #[test]
     fn test_bookmark_foreign_count_triggers() {
-        // create the place.
         let conn = PlacesDb::open_in_memory(ConnectionType::ReadWrite).expect("no memory db");
         let guid1 = SyncGuid::random();
         let url1 = Url::parse("http://example.com").expect("valid url");
@@ -744,7 +623,6 @@ mod tests {
         assert_eq!(get_foreign_count(&conn, &guid1), 0);
         assert_eq!(get_foreign_count(&conn, &guid2), 0);
 
-        // record visits for both URLs, otherwise the place itself will be removed with the bookmark
         conn.execute_cached(
             "INSERT INTO moz_historyvisits (place_id, visit_date, visit_type, is_local)
              VALUES (:place, 10000000, 1, 0);",
@@ -758,7 +636,6 @@ mod tests {
         )
         .expect("should work");
 
-        // create a bookmark pointing at it.
         conn.execute_cached(
             "INSERT INTO moz_bookmarks
                 (fk, type, parent, position, dateAdded, lastModified, guid)
@@ -770,7 +647,6 @@ mod tests {
         assert_eq!(get_foreign_count(&conn, &guid1), 1);
         assert_eq!(get_foreign_count(&conn, &guid2), 0);
 
-        // change the bookmark to point at a different place.
         conn.execute_cached(
             "UPDATE moz_bookmarks SET fk = :new_place WHERE guid = 'fake_guid___';",
             &[(":new_place", &place_id2)],
@@ -787,7 +663,6 @@ mod tests {
 
     #[test]
     fn test_bookmark_synced_foreign_count_triggers() {
-        // create the place.
         let conn = PlacesDb::open_in_memory(ConnectionType::ReadWrite).expect("no memory db");
 
         let url = Url::parse("http://example.com").expect("valid url");
@@ -801,7 +676,6 @@ mod tests {
 
         assert_eq!(get_foreign_count(&conn, &"fake_guid___".into()), 0);
 
-        // create a bookmark pointing at it.
         conn.execute_cached(
             "INSERT INTO moz_bookmarks_synced
                 (placeId, guid)
@@ -812,7 +686,6 @@ mod tests {
         .expect("should work");
         assert_eq!(get_foreign_count(&conn, &"fake_guid___".into()), 1);
 
-        // delete it.
         conn.execute_cached(
             "DELETE FROM moz_bookmarks_synced WHERE guid = 'fake_guid___';",
             [],
@@ -836,15 +709,12 @@ mod tests {
         ])
         .expect("should be able to do the inserts");
 
-        // Should be impossible to delete the place.
         conn.execute("DELETE FROM moz_places WHERE guid = 'place_guid__';", [])
             .expect_err("should fail");
 
-        // delete the bookmark.
         conn.execute("DELETE FROM moz_bookmarks WHERE guid = 'fake_guid___';", [])
             .expect("should be able to delete the bookmark");
 
-        // now we should be able to delete the place.
         conn.execute("DELETE FROM moz_places WHERE guid = 'place_guid__';", [])
             .expect("should now be able to delete the place");
     }
@@ -854,16 +724,13 @@ mod tests {
         let conn = PlacesDb::open_in_memory(ConnectionType::ReadWrite).expect("no memory db");
 
         conn.execute_all(&[
-            // A folder to hold a bookmark.
             "INSERT INTO moz_bookmarks
                 (type, parent, position, dateAdded, lastModified, guid)
             VALUES
                 (3, 1, 0, 1, 1, 'folder_guid_')",
-            // A place for the bookmark.
             "INSERT INTO moz_places
                 (guid, url, url_hash)
             VALUES ('place_guid__', 'http://example.com/', hash('http://example.com/'))",
-            // The bookmark.
             "INSERT INTO moz_bookmarks
                 (fk, type, parent, position, dateAdded, lastModified, guid)
             VALUES
@@ -876,11 +743,9 @@ mod tests {
         ])
         .expect("inserts should work");
 
-        // Delete the folder - the bookmark should cascade delete.
         conn.execute("DELETE FROM moz_bookmarks WHERE guid = 'folder_guid_';", [])
             .expect("should work");
 
-        // folder should be gone.
         assert_eq!(
             select_simple_int(
                 &conn,
@@ -888,7 +753,7 @@ mod tests {
             ),
             0
         );
-        // bookmark should be gone.
+
         assert_eq!(
             select_simple_int(
                 &conn,
@@ -897,7 +762,6 @@ mod tests {
             0
         );
 
-        // Place should also be gone as bookmark url had no visits.
         assert_eq!(
             select_simple_int(
                 &conn,
@@ -912,16 +776,13 @@ mod tests {
         let conn = PlacesDb::open_in_memory(ConnectionType::ReadWrite).expect("no memory db");
 
         conn.execute_all(&[
-            // A folder to hold a bookmark.
             "INSERT INTO moz_bookmarks
                 (type, parent, position, dateAdded, lastModified, guid)
             VALUES
                 (3, 1, 0, 1, 1, 'folder_guid_')",
-            // A place for the bookmark.
             "INSERT INTO moz_places
                 (guid, url, url_hash, foreign_count) -- here we pretend it has a foreign count.
             VALUES ('place_guid__', 'http://example.com/', hash('http://example.com/'), 1)",
-            // The bookmark.
             "INSERT INTO moz_bookmarks
                 (fk, type, parent, position, dateAdded, lastModified, guid)
             VALUES
@@ -934,11 +795,9 @@ mod tests {
         ])
         .expect("inserts should work");
 
-        // Delete the folder - the bookmark should cascade delete.
         conn.execute("DELETE FROM moz_bookmarks WHERE guid = 'folder_guid_';", [])
             .expect("should work");
 
-        // folder should be gone.
         assert_eq!(
             select_simple_int(
                 &conn,
@@ -946,7 +805,7 @@ mod tests {
             ),
             0
         );
-        // bookmark should be gone.
+
         assert_eq!(
             select_simple_int(
                 &conn,
@@ -955,7 +814,6 @@ mod tests {
             0
         );
 
-        // Place should remain as we pretended it has a foreign reference.
         assert_eq!(
             select_simple_int(
                 &conn,
@@ -981,7 +839,7 @@ mod tests {
         .expect("should insert regular bookmark folder");
         conn.execute("DELETE FROM moz_bookmarks WHERE guid = 'bookmarkguid'", [])
             .expect("should delete");
-        // should have a tombstone.
+
         assert_eq!(
             select_simple_int(&conn, "SELECT COUNT(*) from moz_bookmarks_deleted"),
             1
@@ -1001,7 +859,7 @@ mod tests {
         .expect("should insert regular bookmark folder");
         conn.execute("DELETE FROM moz_bookmarks WHERE guid = 'bookmarkguid'", [])
             .expect("should delete");
-        // should not have a tombstone as syncStatus is new.
+
         assert_eq!(
             select_simple_int(&conn, "SELECT COUNT(*) from moz_bookmarks_deleted"),
             0
@@ -1020,7 +878,7 @@ mod tests {
             select_simple_int(&conn, "SELECT COUNT(*) from moz_bookmarks_deleted"),
             1
         );
-        // create a bookmark with the same guid.
+
         conn.execute(
             "INSERT INTO moz_bookmarks
                         (type, parent, position, dateAdded, lastModified, guid)
@@ -1029,7 +887,7 @@ mod tests {
             [],
         )
         .expect("should insert regular bookmark folder");
-        // tombstone should have vanished.
+
         assert_eq!(
             select_simple_int(&conn, "SELECT COUNT(*) from moz_bookmarks_deleted"),
             0
@@ -1040,14 +898,12 @@ mod tests {
     fn test_bookmark_tombstone_auto_deletes_on_update() {
         let conn = PlacesDb::open_in_memory(ConnectionType::ReadWrite).expect("no memory db");
 
-        // check updates do the right thing.
         conn.execute(
             "INSERT into moz_bookmarks_deleted VALUES ('bookmarkguid', 1)",
             [],
         )
         .expect("should insert tombstone");
 
-        // create a bookmark with a different guid.
         conn.execute(
             "INSERT INTO moz_bookmarks
                         (type, parent, position, dateAdded, lastModified, guid)
@@ -1056,12 +912,12 @@ mod tests {
             [],
         )
         .expect("should insert regular bookmark folder");
-        // tombstone should remain.
+
         assert_eq!(
             select_simple_int(&conn, "SELECT COUNT(*) from moz_bookmarks_deleted"),
             1
         );
-        // update guid - should fail as we have a trigger with RAISEs.
+
         conn.execute(
             "UPDATE moz_bookmarks SET guid = 'bookmarkguid'
              WHERE guid = 'fake_guid___'",
@@ -1084,10 +940,9 @@ mod tests {
             },
         )
         .expect("should work");
-        // origins are maintained via triggers, so make sure they are done.
+
         crate::places::storage::delete_pending_temp_tables(&conn).expect("should work");
 
-        // We should have inserted the origin.
         assert_eq!(
             select_simple_int(
                 &conn,
@@ -1096,7 +951,6 @@ mod tests {
             1
         );
 
-        // delete the place, ensure triggers have run, and check origin has gone.
         conn.execute("DELETE FROM moz_places", [])
             .expect("should work");
         crate::places::storage::delete_pending_temp_tables(&conn).expect("should work");
@@ -1115,7 +969,6 @@ mod tests {
         db_file.upgrade_to(16);
         let db = db_file.open();
 
-        // Test the unknownFields column was added
         assert_eq!(
             db.conn_ext_query_one::<String>("SELECT type FROM pragma_table_info('moz_bookmarks_synced') WHERE name = 'unknownFields'").unwrap(),
             "TEXT"
@@ -1124,8 +977,6 @@ mod tests {
 
     #[test]
     fn test_gh5464() {
-        // Test the gh-5464 error case: A user with the `v16` schema, but with `user_version` set
-        // to 15
         let db_file = MigratedDatabaseFile::new(PlacesInitializer::new_for_test(), CREATE_V15_DB);
         db_file.upgrade_to(16);
         let db = db_file.open();
@@ -1151,7 +1002,6 @@ mod tests {
         assert!(!sql.contains("CHECK"));
         assert!(!sql.contains("FOREIGN KEY(parent)"));
 
-        // Make sure that we didn't corrupt the database.
         let integrity_ok = db
             .query_row("PRAGMA integrity_check", [], |row| {
                 Ok(row.get::<_, String>(0)? == "ok")
@@ -1165,7 +1015,6 @@ mod tests {
             .expect("should perform foreign key check");
         assert!(foreign_keys_ok);
 
-        // ...And that we can read everything we inserted.
         #[derive(Eq, PartialEq, Debug)]
         struct BookmarkRow {
             id: i64,
@@ -1230,8 +1079,6 @@ mod tests {
         let db_file = MigratedDatabaseFile::new(PlacesInitializer::new_for_test(), CREATE_V17_DB);
         db_file.upgrade_to(20);
 
-        // Seed origins, plus pages pointing at them, so the migration has both rows to
-        // rebuild and foreign keys to keep intact.
         let conn = db_file.open();
         conn.execute_batch(
             "INSERT INTO moz_origins(id, prefix, host, rev_host, frecency)
@@ -1269,14 +1116,9 @@ mod tests {
             .expect("should query the unique index columns")
         }
 
-        // moz_origins should be keyed on (prefix, host) before the migration. The
-        // upgrades above replay the current shared schema, so check they left the
-        // constraint alone.
         assert_eq!(unique_index_columns(&conn), &["prefix", "host"]);
         drop(conn);
 
-        // Open through `PlacesDb`, so the migration runs with foreign keys enforced;
-        // otherwise the null-out step it relies on goes untested.
         let db = PlacesDb::open(
             &db_file.path,
             ConnectionType::ReadWrite,
@@ -1285,11 +1127,8 @@ mod tests {
         )
         .expect("should upgrade");
 
-        // The unique index should now lead with the higher cardinality column.
         assert_eq!(unique_index_columns(&db), &["host", "prefix"]);
 
-        // The origins themselves should be untouched, ids included, since moz_places
-        // references them.
         #[derive(Eq, PartialEq, Debug)]
         struct OriginRow {
             id: i64,
@@ -1340,7 +1179,6 @@ mod tests {
             ]
         );
 
-        // ...And every page should still point at the origin it did before.
         let pages = db
             .query_rows_and_then(
                 "SELECT id, origin_id FROM moz_places ORDER BY id",
@@ -1355,7 +1193,6 @@ mod tests {
             &[(1, Some(1)), (2, Some(2)), (3, Some(3)), (4, None)]
         );
 
-        // hostindex should have been recreated, since rebuilding the table dropped it.
         assert!(
             db.exists(
                 "SELECT 1 FROM sqlite_schema WHERE type = 'index' AND name = 'hostindex'",
@@ -1364,7 +1201,6 @@ mod tests {
             .expect("should look for hostindex")
         );
 
-        // The table used to rebuild moz_origins should have been removed.
         assert!(
             !db.exists(
                 "SELECT 1 FROM sqlite_schema WHERE name = 'moz_origins_new'",
@@ -1373,7 +1209,6 @@ mod tests {
             .expect("should look for moz_origins_new")
         );
 
-        // moz_places should still reference the rebuilt moz_origins.
         let foreign_key = db
             .query_row(
                 r#"SELECT "table", "from", "to" FROM pragma_foreign_key_list('moz_places')"#,
@@ -1405,8 +1240,6 @@ mod tests {
             .expect("should perform foreign key check");
         assert!(foreign_keys_ok);
 
-        // The origin-creation trigger should still upsert against the rebuilt
-        // moz_origins.
         db.execute(
             "INSERT INTO moz_places(guid, url, url_hash)
              VALUES ('page_guid__5', 'https://example.com/new-page',
@@ -1416,10 +1249,9 @@ mod tests {
             [],
         )
         .expect("should insert pages");
-        // origins are maintained via triggers, so make sure they are done.
+
         crate::places::storage::delete_pending_temp_tables(&db).expect("should update origins");
 
-        // Adding a page for a known origin should update it rather than add a new one...
         assert_eq!(
             db.conn_ext_query_one::<i64>(
                 "SELECT origin_id FROM moz_places WHERE guid = 'page_guid__5'"
@@ -1427,7 +1259,7 @@ mod tests {
             .expect("should query the known origin"),
             1
         );
-        // ...And a page for an unknown origin should add one.
+
         assert_eq!(
             db.conn_ext_query_one::<i64>(
                 "SELECT COUNT(*) FROM moz_origins
@@ -1440,8 +1272,6 @@ mod tests {
 
     #[test]
     fn test_all_upgrades() {
-        // Test the migration process in general: open a fresh DB and a DB that's gone through the migration
-        // process.  Check that the schemas match.
         let fresh_db = PlacesDb::open_in_memory(ConnectionType::ReadWrite).unwrap();
 
         let db_file = MigratedDatabaseFile::new(PlacesInitializer::new_for_test(), CREATE_V15_DB);

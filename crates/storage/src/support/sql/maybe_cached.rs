@@ -6,8 +6,6 @@ use rusqlite::{self, CachedStatement, Connection, Statement};
 
 use std::ops::{Deref, DerefMut};
 
-/// MaybeCached is a type that can be used to help abstract
-/// over cached and uncached rusqlite statements in a transparent manner.
 pub enum MaybeCached<'conn> {
     Uncached(Statement<'conn>),
     Cached(CachedStatement<'conn>),

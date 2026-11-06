@@ -6,19 +6,6 @@ use crate::places::types::*;
 use crate::support::types::Timestamp;
 use url::Url;
 
-/// An "observation" based model for updating history.
-/// You create a VisitObservation, call functions on it which correspond
-/// with what you observed. The page will then be updated using this info.
-///
-/// It's implemented such that the making of an "observation" is itself
-/// significant - it records what specific changes should be made to storage.
-/// For example, instead of simple bools with defaults (where you can't
-/// differentiate explicitly setting a value from the default value), we use
-/// Option<bool>, with the idea being it's better for a store shaped like Mentat.
-///
-/// It exposes a "builder api", but for convenience, that API allows Options too.
-/// So, eg, `.with_title(None)` or `with_is_error(None)` is allowed but records
-/// no observation.
 #[derive(Clone, Debug)]
 pub struct VisitObservation {
     pub url: Url,
@@ -49,9 +36,6 @@ impl VisitObservation {
         }
     }
 
-    // A "builder" API to sanely build an observation. Note that this can be
-    // called with Option<String> (and if None will effectively be a no-op)
-    // or directly with a string.
     pub fn with_title(mut self, t: impl Into<Option<String>>) -> Self {
         self.title = t.into();
         self
@@ -97,7 +81,6 @@ impl VisitObservation {
         self
     }
 
-    // Other helpers which can be derived.
     pub fn get_redirect_frecency_boost(&self) -> bool {
         self.is_redirect_source.is_some()
             && match self.visit_type {
@@ -106,7 +89,6 @@ impl VisitObservation {
             }
     }
 
-    // nsHistory::GetHiddenState()
     pub fn get_is_hidden(&self) -> bool {
         match self.visit_type {
             Some(visit_type) => {

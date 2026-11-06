@@ -4,9 +4,6 @@
 
 use std::fmt;
 
-/// Helper type for printing repeated strings more efficiently. You should use
-/// [`repeat_display`] or one of the `repeat_sql_*` helpers to
-/// construct it.
 #[derive(Debug, Clone)]
 pub struct RepeatDisplay<'a, F> {
     count: usize,
@@ -29,20 +26,6 @@ where
     }
 }
 
-/// Construct a RepeatDisplay that will repeatedly call `fmt_one` with a formatter `count` times,
-/// separated by `sep`.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// # use crate::support::sql::repeat_display;
-/// assert_eq!(format!("{}", repeat_display(1, ",", |i, f| write!(f, "({},?)", i))),
-///            "(0,?)");
-/// assert_eq!(format!("{}", repeat_display(2, ",", |i, f| write!(f, "({},?)", i))),
-///            "(0,?),(1,?)");
-/// assert_eq!(format!("{}", repeat_display(3, ",", |i, f| write!(f, "({},?)", i))),
-///            "(0,?),(1,?),(2,?)");
-/// ```
 #[inline]
 pub fn repeat_display<F>(count: usize, sep: &str, fmt_one: F) -> RepeatDisplay<'_, F>
 where
@@ -55,53 +38,14 @@ where
     }
 }
 
-/// Returns a value that formats as `count` instances of `?` separated by commas.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// # use crate::support::sql::repeat_sql_vars;
-/// assert_eq!(format!("{}", repeat_sql_vars(0)), "");
-/// assert_eq!(format!("{}", repeat_sql_vars(1)), "?");
-/// assert_eq!(format!("{}", repeat_sql_vars(2)), "?,?");
-/// assert_eq!(format!("{}", repeat_sql_vars(3)), "?,?,?");
-/// ```
 pub fn repeat_sql_vars(count: usize) -> impl fmt::Display {
     repeat_display(count, ",", |_, f| write!(f, "?"))
 }
 
-/// Returns a value that formats as `count` instances of `(?)` separated by commas.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// # use crate::support::sql::repeat_sql_values;
-/// assert_eq!(format!("{}", repeat_sql_values(0)), "");
-/// assert_eq!(format!("{}", repeat_sql_values(1)), "(?)");
-/// assert_eq!(format!("{}", repeat_sql_values(2)), "(?),(?)");
-/// assert_eq!(format!("{}", repeat_sql_values(3)), "(?),(?),(?)");
-/// ```
-///
 pub fn repeat_sql_values(count: usize) -> impl fmt::Display {
-    // We could also implement this as `repeat_sql_multi_values(count, 1)`,
-    // but this is faster and no less clear IMO.
     repeat_display(count, ",", |_, f| write!(f, "(?)"))
 }
 
-/// Returns a value that formats as `num_values` instances of `(?,?,?,...)` (where there are
-/// `vars_per_value` question marks separated by commas in between the `?`s).
-///
-/// Panics if `vars_per_value` is zero (however, `num_values` is allowed to be zero).
-///
-/// # Example
-///
-/// ```rust,ignore
-/// # use crate::support::sql::repeat_multi_values;
-/// assert_eq!(format!("{}", repeat_multi_values(0, 2)), "");
-/// assert_eq!(format!("{}", repeat_multi_values(1, 5)), "(?,?,?,?,?)");
-/// assert_eq!(format!("{}", repeat_multi_values(2, 3)), "(?,?,?),(?,?,?)");
-/// assert_eq!(format!("{}", repeat_multi_values(3, 1)), "(?),(?),(?)");
-/// ```
 pub fn repeat_multi_values(num_values: usize, vars_per_value: usize) -> impl fmt::Display {
     assert_ne!(
         vars_per_value, 0,

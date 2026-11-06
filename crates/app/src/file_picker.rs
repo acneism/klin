@@ -1,19 +1,14 @@
-//! Выбор файла для `<input type=file>`: системный диалог в отдельном потоке,
-//! чтобы интерфейс не замирал, пока он открыт.
-
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 
 use klin_shared::{RequestId, TabId};
 
-/// Результат выбора: `None` — пользователь закрыл диалог.
 pub struct Picked {
     pub tab: TabId,
     pub id: RequestId,
     pub files: Option<Vec<PathBuf>>,
 }
 
-/// Открыть диалог. Результат придёт в `results`, после чего вызывается `wake`.
 pub fn open(
     tab: TabId,
     id: RequestId,
@@ -24,13 +19,12 @@ pub fn open(
 ) {
     std::thread::spawn(move || {
         let files = pick(multiple, &accept);
-        // Ошибка означает, что окно уже закрыто.
+
         let _ = results.send(Picked { tab, id, files });
         wake();
     });
 }
 
-/// Расширения из атрибута `accept`: `.png` → `png`; `image/*` и подобные MIME-типы — по таблице.
 fn extensions(accept: &[String]) -> Vec<String> {
     let mut out = Vec::new();
     for item in accept {
@@ -67,7 +61,6 @@ fn pick(multiple: bool, accept: &[String]) -> Option<Vec<PathBuf>> {
     let mut dialog = rfd::FileDialog::new();
     let exts = extensions(accept);
     if !exts.is_empty() {
-        // Как в Firefox: сначала фильтр страницы, затем «Все файлы».
         dialog = dialog
             .add_filter("Подходящие файлы", &exts)
             .add_filter("Все файлы", &["*"]);
@@ -81,7 +74,6 @@ fn pick(multiple: bool, accept: &[String]) -> Option<Vec<PathBuf>> {
 
 #[cfg(not(windows))]
 fn pick(_multiple: bool, accept: &[String]) -> Option<Vec<PathBuf>> {
-    // Отступление от Firefox: вне Windows системного диалога пока нет (платформа не поддерживается).
     log::warn!(
         "file picker is only implemented on Windows (accept: {:?})",
         extensions(accept)

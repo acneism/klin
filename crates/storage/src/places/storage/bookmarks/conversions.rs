@@ -13,11 +13,7 @@ use crate::support::guid::Guid as SyncGuid;
 use url::Url;
 
 impl BookmarkUpdateInfo {
-    /// The functions exposed over the FFI use the same type for all inserts.
-    /// This function converts that into the type our update API uses.
     pub fn into_updatable(self, ty: BookmarkType) -> Result<(SyncGuid, UpdatableItem)> {
-        // Check the things that otherwise would be enforced by the type system.
-
         if self.title.is_some() && ty == BookmarkType::Separator {
             return Err(InvalidPlaceInfo::IllegalChange("title", ty).into());
         }

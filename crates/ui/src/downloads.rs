@@ -1,12 +1,9 @@
-//! Кнопка и панель загрузок — по образцу панели загрузок Firefox.
-
 use egui::{Align, Key, Layout, Rect, RichText, Vec2};
 use klin_shared::download::{Download, DownloadState};
 
 use crate::Action;
 use crate::icons::{self, Icon};
 
-/// Размер в единицах, как в списке загрузок Firefox: «4,2 МБ».
 pub(crate) fn format_size(bytes: u64) -> String {
     const UNITS: [&str; 4] = ["байт", "КБ", "МБ", "ГБ"];
     let mut value = bytes as f64;
@@ -22,7 +19,6 @@ pub(crate) fn format_size(bytes: u64) -> String {
     }
 }
 
-/// Строка состояния под именем файла.
 pub(crate) fn status_text(download: &Download) -> String {
     match &download.state {
         DownloadState::InProgress {
@@ -41,7 +37,6 @@ pub(crate) fn status_text(download: &Download) -> String {
     }
 }
 
-/// Доля выполнения общей суммы идущих загрузок — для полоски на кнопке.
 fn overall_progress(downloads: &[Download]) -> Option<f32> {
     let (mut got, mut all, mut any) = (0u64, 0u64, false);
     for d in downloads {
@@ -60,8 +55,6 @@ fn overall_progress(downloads: &[Download]) -> Option<f32> {
     })
 }
 
-/// Кнопка на панели навигации. Видна, только если в сеансе были загрузки
-/// (`browser.download.autohideButton`).
 pub(crate) fn button(ui: &mut egui::Ui, downloads: &[Download]) -> Option<egui::Response> {
     if downloads.is_empty() {
         return None;
@@ -84,7 +77,6 @@ pub(crate) fn button(ui: &mut egui::Ui, downloads: &[Download]) -> Option<egui::
     Some(response)
 }
 
-/// Панель под кнопкой. Возвращает `false`, когда панель нужно закрыть.
 pub(crate) fn panel(
     ctx: &egui::Context,
     anchor: Rect,
@@ -104,7 +96,6 @@ pub(crate) fn panel(
                     egui::ScrollArea::vertical()
                         .max_height(420.0)
                         .show(ui, |ui| {
-                            // Новые сверху, как в Firefox.
                             for download in downloads.iter().rev() {
                                 row(ui, download, actions);
                                 ui.separator();

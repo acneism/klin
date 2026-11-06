@@ -1,23 +1,12 @@
-//! Загрузки файлов: что знают о них ядро, интерфейс и служба загрузок.
-
 use std::path::PathBuf;
 
 use crate::{DownloadId, Url};
 
-/// Состояние загрузки — как в менеджере загрузок Firefox.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DownloadState {
-    /// Идёт; `total` неизвестен, если сервер не прислал Content-Length.
-    InProgress {
-        received: u64,
-        total: Option<u64>,
-    },
-    Finished {
-        size: u64,
-    },
-    Failed {
-        error: String,
-    },
+    InProgress { received: u64, total: Option<u64> },
+    Finished { size: u64 },
+    Failed { error: String },
     Canceled,
 }
 
@@ -25,13 +14,11 @@ pub enum DownloadState {
 pub struct Download {
     pub id: DownloadId,
     pub url: Url,
-    /// Итоговый путь файла (пока идёт загрузка, данные пишутся в `<путь>.part`).
     pub path: PathBuf,
     pub state: DownloadState,
 }
 
 impl Download {
-    /// Имя файла для показа в списке.
     pub fn file_name(&self) -> String {
         self.path
             .file_name()
@@ -40,7 +27,6 @@ impl Download {
     }
 }
 
-/// Сообщения службы загрузок.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DownloadEvent {
     Started {

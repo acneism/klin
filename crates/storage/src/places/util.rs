@@ -6,8 +6,6 @@ use crate::places::error::{Error, Result};
 use std::path::Path;
 use url::Url;
 
-/// Equivalent to `&s[..max_len.min(s.len())]`, but handles the case where
-/// `s.is_char_boundary(max_len)` is false (which would otherwise panic).
 pub fn slice_up_to(s: &str, max_len: usize) -> &str {
     if max_len >= s.len() {
         return s;
@@ -19,10 +17,6 @@ pub fn slice_up_to(s: &str, max_len: usize) -> &str {
     &s[..idx]
 }
 
-/// If `p` is a file URL, return it, otherwise try and make it one.
-///
-/// Errors if `p` is a relative non-url path, or if it's a URL path
-/// that's isn't a `file:` URL.
 pub fn ensure_url_path(p: impl AsRef<Path>) -> Result<Url> {
     if let Some(u) = p.as_ref().to_str().and_then(|s| Url::parse(s).ok()) {
         if u.scheme() == "file" {

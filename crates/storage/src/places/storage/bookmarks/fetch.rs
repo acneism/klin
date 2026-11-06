@@ -6,7 +6,6 @@ use super::super::bookmarks::json_tree::{self, FetchDepth};
 use super::*;
 use rusqlite::Row;
 
-// A helper that will ensure tests fail, but in production will make log noise instead.
 fn noisy_debug_assert_eq<T: std::cmp::PartialEq + std::fmt::Debug>(a: &T, b: &T, msg: &str) {
     debug_assert_eq!(a, b);
     if a != b {
@@ -31,7 +30,6 @@ fn noisy_debug_assert(v: bool, msg: &str) {
     }
 }
 
-/// Structs we return when reading bookmarks
 #[derive(Debug, Clone)]
 pub struct BookmarkData {
     pub guid: SyncGuid,
@@ -49,7 +47,6 @@ impl From<BookmarkData> for Item {
     }
 }
 
-// Only for tests because we ignore timestamps
 #[cfg(test)]
 impl PartialEq for BookmarkData {
     fn eq(&self, other: &Self) -> bool {
@@ -81,12 +78,9 @@ pub struct Folder {
     pub guid: SyncGuid,
     pub date_added: Timestamp,
     pub last_modified: Timestamp,
-    pub parent_guid: Option<SyncGuid>, // Option because the root is a folder but has no parent.
-    // Always 0 if parent_guid is None
+    pub parent_guid: Option<SyncGuid>,
     pub position: u32,
     pub title: Option<String>,
-    // Depending on the specific API request, either, both, or none of these `child_*` vecs
-    // will be populated.
     pub child_guids: Option<Vec<SyncGuid>>,
     pub child_nodes: Option<Vec<Item>>,
 }
@@ -97,7 +91,6 @@ impl From<Folder> for Item {
     }
 }
 
-// The type used to update the actual item.
 #[derive(Debug, Clone)]
 pub enum Item {
     Bookmark { b: BookmarkData },
@@ -105,8 +98,6 @@ pub enum Item {
     Folder { f: Folder },
 }
 
-// We allow all "common" fields from the sub-types to be getters on the
-// InsertableItem type.
 macro_rules! impl_common_bookmark_getter {
     ($getter_name:ident, $T:ty) => {
         pub fn $getter_name(&self) -> &$T {
@@ -133,10 +124,6 @@ impl Item {
     }
 }
 
-/// No simple `From` here, because json_tree doesn't give us the parent or position - it
-/// expects us to walk a tree, so we do.
-///
-/// Extra complication for the fact the root has a None parent_guid :)
 fn folder_from_node_with_parent_info(
     f: json_tree::FolderNode,
     parent_guid: Option<SyncGuid>,
@@ -144,8 +131,7 @@ fn folder_from_node_with_parent_info(
     depth_left: usize,
 ) -> Folder {
     let guid = f.guid.expect("all items have guids");
-    // We always provide child_guids, and only provide child_nodes if we are
-    // going to keep recursing.
+
     let child_guids = Some(
         f.children
             .iter()
@@ -213,14 +199,10 @@ fn item_from_node_with_parent_info(
     }
 }
 
-/// Call fetch_tree_with_depth with FetchDepth::Deepest.
-/// This is the function called by the FFI when requesting the tree.
 pub fn fetch_tree(db: &PlacesDb, item_guid: &SyncGuid) -> Result<Option<Item>> {
     fetch_tree_with_depth(db, item_guid, &FetchDepth::Deepest)
 }
 
-/// Call fetch_tree with a depth parameter and convert the result
-/// to an Item.
 pub fn fetch_tree_with_depth(
     db: &PlacesDb,
     item_guid: &SyncGuid,
@@ -233,7 +215,7 @@ pub fn fetch_tree_with_depth(
     } else {
         return Ok(None);
     };
-    // parent_guid being an Option<> is a bit if a pain :(
+
     Ok(Some(match tree {
         json_tree::BookmarkTreeNode::Folder { f } => {
             noisy_debug_assert(
@@ -259,15 +241,13 @@ pub fn fetch_bookmarks_by_url(db: &PlacesDb, url: &Url) -> Result<Vec<BookmarkDa
     let nodes = crate::places::storage::bookmarks::get_raw_bookmarks_for_url(db, url)?
         .into_iter()
         .map(|rb| {
-            // Cause tests to fail, but we'd rather not panic here
-            // for real.
             noisy_debug_assert_eq(&rb.child_count, &0, "child count should be zero");
             noisy_debug_assert_eq(
                 &rb.bookmark_type,
                 &BookmarkType::Bookmark,
                 "not a bookmark!",
             );
-            // We don't log URLs so we do the comparison here.
+
             noisy_debug_assert(rb.url.as_ref() == Some(url), "urls don't match");
             noisy_debug_assert(rb.parent_guid.is_some(), "no parent guid");
             BookmarkData {
@@ -286,11 +266,6 @@ pub fn fetch_bookmarks_by_url(db: &PlacesDb, url: &Url) -> Result<Vec<BookmarkDa
     Ok(nodes)
 }
 
-/// This is similar to fetch_tree, but does not recursively fetch children of
-/// folders.
-///
-/// If `get_direct_children` is true, it will return 1 level of folder children,
-/// otherwise it returns just their guids.
 pub fn fetch_bookmark(
     db: &PlacesDb,
     item_guid: &SyncGuid,
@@ -464,7 +439,6 @@ mod test {
                 url: url.clone(),
                 parent_guid: BookmarkRootGuid::Unfiled.into(),
                 position: 1,
-                // Ignored by our PartialEq
                 date_added: Timestamp(0),
                 last_modified: Timestamp(0),
             }
@@ -477,7 +451,6 @@ mod test {
                 url,
                 parent_guid: BookmarkRootGuid::Unfiled.into(),
                 position: 3,
-                // Ignored by our PartialEq
                 date_added: Timestamp(0),
                 last_modified: Timestamp(0),
             }
@@ -601,10 +574,6 @@ mod test {
             }),
         );
 
-        // Put a couple of invalid items in the tree - not only should fetching
-        // them directly "work" (as in, not crash!), fetching their parent's
-        // tree should also do a sane thing (ie, not crash *and* return the
-        // valid items)
         let guid_bad = append_invalid_bookmark(
             &conns.write,
             BookmarkRootGuid::Mobile.guid(),
@@ -614,7 +583,6 @@ mod test {
         .guid;
         assert!(fetch_bookmark(&conns.read, &guid_bad, false)?.is_none());
 
-        // Now fetch the entire tree.
         let root = match fetch_bookmark(&conns.read, BookmarkRootGuid::Root.guid(), false)?.unwrap()
         {
             Item::Folder { f } => f,
@@ -736,7 +704,6 @@ mod test {
             assert_eq!(c.parent_guid().unwrap(), &root.guid);
             match c {
                 Item::Folder { f } => {
-                    // all out roots are here, so check it is mobile.
                     if f.guid == BookmarkRootGuid::Mobile {
                         assert!(f.child_guids.is_some());
                         assert!(f.child_nodes.is_some());
@@ -769,8 +736,7 @@ mod test {
                 _ => panic!("unexpected type"),
             }
         }
-        // parent_guid/position for the directly returned node is filled in separately,
-        // so make sure it works for non-root nodes too.
+
         let mobile = match fetch_tree(&conns.read, BookmarkRootGuid::Mobile.guid())?.unwrap() {
             Item::Folder { f } => f,
             _ => panic!("not a folder?"),
@@ -811,7 +777,6 @@ mod test {
                 "url": "https://www.example4.com/",
                 "title": "b4",
             }),
-            // should be ignored.
             json!({
                 "guid": "folder1_____",
                 "title": "A folder",
@@ -841,7 +806,6 @@ mod test {
             "badurl",
         );
 
-        // The limit applies before we filter the invalid bookmark, so ask for 4.
         let bmks = recent_bookmarks(&conns.read, 4)?;
         assert_eq!(bmks.len(), 3);
 
@@ -853,7 +817,6 @@ mod test {
                 url: Url::parse("https://www.example5.com/").unwrap(),
                 parent_guid: BookmarkRootGuid::Unfiled.into(),
                 position: 5,
-                // Ignored by our PartialEq
                 date_added: Timestamp(0),
                 last_modified: Timestamp(0),
             }
@@ -866,7 +829,6 @@ mod test {
                 url: Url::parse("https://www.example4.com/").unwrap(),
                 parent_guid: BookmarkRootGuid::Unfiled.into(),
                 position: 3,
-                // Ignored by our PartialEq
                 date_added: Timestamp(0),
                 last_modified: Timestamp(0),
             }
@@ -879,7 +841,6 @@ mod test {
                 url: Url::parse("https://www.example3.com/").unwrap(),
                 parent_guid: BookmarkRootGuid::Unfiled.into(),
                 position: 2,
-                // Ignored by our PartialEq
                 date_added: Timestamp(0),
                 last_modified: Timestamp(0),
             }

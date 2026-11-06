@@ -1,6 +1,3 @@
-//! Служба истории и закладок: свой поток с подключением к `places.sqlite`.
-//! Поток интерфейса только отправляет сообщения и получает ответы через колбэки.
-
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::JoinHandle;
@@ -16,27 +13,22 @@ use crate::places::types::{VisitTransitionSet, VisitType};
 use crate::places::{ConnectionType, PlacesApi, PlacesDb, VisitObservation};
 use crate::support::types::Timestamp;
 
-/// Подсказка адресной строки.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Suggestion {
     pub url: Url,
     pub title: String,
 }
 
-/// Запись истории для боковой панели.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HistoryEntry {
     pub url: Url,
     pub title: Option<String>,
-    /// Время посещения, мс с начала эпохи Unix.
     pub visited_ms: u64,
 }
 
-/// Как пользователь попал на страницу — для расчёта frecency (как переходы в Firefox).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Transition {
     Link,
-    /// Адрес введён или выбран в адресной строке.
     Typed,
     Bookmark,
     Reload,
@@ -86,7 +78,6 @@ pub struct PlacesService {
 }
 
 impl PlacesService {
-    /// Открыть (или создать) `places.sqlite` в фоновом потоке.
     pub fn start(path: PathBuf) -> Self {
         let (tx, rx) = channel();
         let thread = std::thread::Builder::new()
@@ -108,7 +99,6 @@ impl PlacesService {
         }
     }
 
-    /// Записать посещение страницы (переход завершился).
     pub fn record_visit(&self, url: Url, transition: Transition, referrer: Option<Url>) {
         self.send(Message::Visit {
             url,
@@ -117,12 +107,10 @@ impl PlacesService {
         });
     }
 
-    /// Обновить заголовок страницы в истории.
     pub fn record_title(&self, url: Url, title: String) {
         self.send(Message::Title { url, title });
     }
 
-    /// Подсказки для адресной строки по истории и закладкам, лучшие — первыми.
     pub fn search(
         &self,
         query: String,
@@ -136,7 +124,6 @@ impl PlacesService {
         });
     }
 
-    /// Пользователь выбрал подсказку: запомнить пару «ввод → адрес» (адаптивная история Firefox).
     pub fn accept_suggestion(&self, query: String, url: Url) {
         self.send(Message::AcceptSuggestion { query, url });
     }
@@ -152,12 +139,10 @@ impl PlacesService {
         self.send(Message::AddBookmark { url, title });
     }
 
-    /// Удалить все закладки на адрес (как «Удалить закладку» в панели звёздочки Firefox).
     pub fn remove_bookmarks(&self, url: Url) {
         self.send(Message::RemoveBookmarks { url });
     }
 
-    /// Последние посещения, новые — первыми.
     pub fn recent_history(
         &self,
         limit: usize,
@@ -185,7 +170,7 @@ fn run(path: PathBuf, rx: Receiver<Message>) {
         Ok(db) => db,
         Err(e) => {
             log::error!("places: cannot open {}: {e}", path.display());
-            // Ответить пустыми данными, чтобы ждущие не зависли.
+
             for message in rx {
                 match message {
                     Message::Search { reply, .. } => reply(Vec::new()),
@@ -223,7 +208,6 @@ fn handle(db: &mut PlacesDb, message: Message) -> crate::places::Result<()> {
             crate::places::apply_observation(db, observation)?;
         }
         Message::Title { url, title } => {
-            // Наблюдение без типа перехода обновляет страницу, не добавляя посещения.
             let observation = VisitObservation::new(url).with_title(title);
             crate::places::apply_observation(db, observation)?;
         }
@@ -239,7 +223,7 @@ fn handle(db: &mut PlacesDb, message: Message) -> crate::places::Result<()> {
                     limit,
                 },
             )?;
-            // search_frecent возвращает результаты отсортированными по адресу; подсказки — по frecency.
+
             results.sort_by_key(|r| std::cmp::Reverse(r.frecency));
             reply(
                 results
@@ -257,7 +241,6 @@ fn handle(db: &mut PlacesDb, message: Message) -> crate::places::Result<()> {
         }
         Message::AddBookmark { url, title } => {
             if fetch::fetch_bookmarks_by_url(db, &url)?.is_empty() {
-                // TODO(0.2): сверить папку по умолчанию с `browser.bookmarks.defaultLocation` Firefox.
                 let bookmark = InsertableBookmark {
                     parent_guid: BookmarkRootGuid::Unfiled.as_guid(),
                     position: BookmarkPosition::Append,
@@ -348,7 +331,6 @@ mod tests {
         assert_eq!(recent.first().map(|e| &e.url), Some(&blog));
         drop(places);
 
-        // Данные на диске: тот же файл открывается заново.
         let places = PlacesService::start(path);
         let recent = wait(|r| places.recent_history(10, r));
         assert_eq!(recent.len(), 2);

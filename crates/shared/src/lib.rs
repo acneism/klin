@@ -1,7 +1,3 @@
-//! Общие типы Klin: идентификаторы окон, вкладок и запросов.
-//!
-//! Крейт не зависит ни от движка, ни от интерфейса — его используют все остальные.
-
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -14,7 +10,6 @@ macro_rules! id_type {
         pub struct $name(u64);
 
         impl $name {
-            /// Выдаёт новый уникальный в пределах процесса идентификатор.
             pub fn next() -> Self {
                 static NEXT: AtomicU64 = AtomicU64::new(1);
                 Self(NEXT.fetch_add(1, Ordering::Relaxed))
@@ -33,43 +28,22 @@ macro_rules! id_type {
     };
 }
 
-id_type!(
-    /// Окно браузера.
-    WindowId,
-    "window#"
-);
-id_type!(
-    /// Вкладка. Живёт дольше, чем WebView движка: выгруженная вкладка сохраняет TabId.
-    TabId,
-    "tab#"
-);
-id_type!(
-    /// Запрос страницы к встраивателю (диалог, разрешение, выбор файла, меню).
-    RequestId,
-    "request#"
-);
-id_type!(
-    /// Загрузка файла.
-    DownloadId,
-    "download#"
-);
+id_type!(WindowId, "window#");
+id_type!(TabId, "tab#");
+id_type!(RequestId, "request#");
+id_type!(DownloadId, "download#");
 
 pub mod download;
 pub mod session;
 
-/// Состояние загрузки страницы — как индикатор во вкладке Firefox.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum LoadStatus {
-    /// Загрузка началась, документа ещё нет.
     Started,
-    /// Документ разобран (DOMContentLoaded).
     HeadParsed,
-    /// Страница загружена полностью (load).
     #[default]
     Complete,
 }
 
-/// Куда открыть новую вкладку, запрошенную страницей (window.open, target=_blank, средняя кнопка).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Disposition {
     ForegroundTab,
@@ -77,7 +51,6 @@ pub enum Disposition {
     NewWindow,
 }
 
-/// Изображение в формате RGBA8 (значок сайта, снимок вкладки).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Image {
     pub width: u32,

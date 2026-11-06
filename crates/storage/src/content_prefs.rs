@@ -1,11 +1,3 @@
-//! Настройки по сайтам (`content-prefs.sqlite`) — порт схемы ContentPrefService2 из Firefox
-//! (`toolkit/components/contentprefs/ContentPrefService2.sys.mjs`, MPL 2.0).
-//!
-//! Таблицы `groups` (сайты), `settings` (имена настроек) и `prefs` (значения), отметка
-//! времени в секундах. Масштаб страницы хранится под именем [`FULL_ZOOM`], как в Firefox.
-//! TODO(0.2): сверить правило группировки по сайту (HostnameGrouper) и номер версии схемы
-//! с исходником Firefox при импорте профиля.
-
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::JoinHandle;
@@ -13,7 +5,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-/// Имя настройки масштаба в Firefox.
 pub const FULL_ZOOM: &str = "browser.content.full-zoom";
 
 const SCHEMA: &str = "
@@ -45,15 +36,12 @@ enum Message {
     },
 }
 
-/// Служба настроек по сайтам. Запись и чтение идут в фоновом потоке; при уничтожении
-/// служба дописывает очередь и закрывает базу.
 pub struct ContentPrefs {
     tx: Option<Sender<Message>>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl ContentPrefs {
-    /// Запустить службу для базы `content-prefs.sqlite` в папке профиля.
     pub fn start(path: PathBuf) -> Self {
         let (tx, rx) = channel();
         let thread = std::thread::Builder::new()
@@ -67,7 +55,6 @@ impl ContentPrefs {
         }
     }
 
-    /// Сохранить значение; `None` удаляет его (например, масштаб вернули к 100 %).
     pub fn set(&self, group: &str, setting: &str, value: Option<f64>) {
         self.send(Message::Set {
             group: group.into(),
@@ -76,7 +63,6 @@ impl ContentPrefs {
         });
     }
 
-    /// Все значения настройки по сайтам; `reply` вызывается в потоке службы.
     pub fn get_all(&self, setting: &str, reply: impl FnOnce(Values) + Send + 'static) {
         self.send(Message::GetAll {
             setting: setting.into(),
@@ -107,7 +93,7 @@ fn run(path: &Path, rx: Receiver<Message>) {
         Ok(db) => db,
         Err(e) => {
             log::error!("content-prefs: cannot open {}: {e}", path.display());
-            // Отвечаем пустыми данными, чтобы ждущие не зависли.
+
             for message in rx {
                 if let Message::GetAll { reply, .. } = message {
                     reply(Vec::new());
@@ -133,7 +119,7 @@ fn run(path: &Path, rx: Receiver<Message>) {
 
 fn open(path: &Path) -> rusqlite::Result<Connection> {
     let db = Connection::open(path)?;
-    // Все базы профиля — в режиме WAL (docs/spec.md, «Надёжность данных»).
+
     db.pragma_update(None, "journal_mode", "WAL")?;
     db.execute_batch(SCHEMA)?;
     Ok(db)
@@ -173,7 +159,7 @@ fn set(db: &Connection, group: &str, setting: &str, value: Option<f64>) -> rusql
             params![group_id, setting_id, value, now],
         )?;
     }
-    // Группы без настроек не храним — как Firefox при удалении значения.
+
     tx.execute(
         "DELETE FROM groups WHERE id NOT IN (SELECT groupID FROM prefs WHERE groupID IS NOT NULL)",
         [],
@@ -235,7 +221,6 @@ mod tests {
         assert_eq!(all(&prefs), [("example.com".to_owned(), 1.33)]);
         drop(prefs);
 
-        // Схема совпадает с Firefox: читается обычным SQL.
         let db = Connection::open(&path).unwrap();
         let mode: String = db
             .query_row("PRAGMA journal_mode", [], |r| r.get(0))

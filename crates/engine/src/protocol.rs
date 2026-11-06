@@ -1,6 +1,3 @@
-//! Внутренние страницы через собственную схему (`klin:`): Servo не даёт
-//! регистрировать `about:`, поэтому about:-адреса переводятся туда и обратно.
-
 use std::future::Future;
 use std::pin::Pin;
 
@@ -10,14 +7,12 @@ use servo::protocol_handler::{
     ResourceFetchTiming, Response, ResponseBody,
 };
 
-/// about:newtab → klin:newtab для загрузки в движке.
 pub fn internal_url(url: &Url) -> Url {
     klin_internal_pages::about_to_internal(url.as_str())
         .and_then(|s| Url::parse(&s).ok())
         .unwrap_or_else(|| url.clone())
 }
 
-/// klin:newtab → about:newtab для адресной строки и ядра.
 pub(crate) fn display_url(url: Url) -> Url {
     klin_internal_pages::internal_to_about(url.as_str())
         .and_then(|s| Url::parse(&s).ok())

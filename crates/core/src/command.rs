@@ -1,12 +1,5 @@
-//! Команды браузера и горячие клавиши.
-//!
-//! Имена команд Firefox взяты из `browser/base/content/browser-sets.inc`
-//! (см. docs/spec.md, «Карта заимствований»), раскладка клавиш — из
-//! <https://support.mozilla.org/kb/Keyboard+shortcuts> для Windows.
-
 use crate::input::{Key, Modifiers, NamedKey};
 
-/// Команда интерфейса. Интерфейс не вызывает движок напрямую — только через команды ядра.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Command {
     NewWindow,
@@ -17,9 +10,7 @@ pub enum Command {
     UndoCloseTab,
     NextTab,
     PreviousTab,
-    /// Ctrl+1…Ctrl+8: вкладка по номеру, начиная с нуля.
     SelectTab(u8),
-    /// Ctrl+9: последняя вкладка.
     SelectLastTab,
     FocusUrlBar,
     Back,
@@ -45,8 +36,6 @@ pub enum Command {
 }
 
 impl Command {
-    /// Идентификатор команды в Firefox (`<command id=…>` или `<key command=…>` в browser-sets.inc).
-    /// `None` — у Firefox нет отдельной команды, поведение реализовано в обработчике клавиш вкладок.
     pub fn firefox_id(self) -> Option<&'static str> {
         use Command::*;
         Some(match self {
@@ -85,7 +74,6 @@ impl Command {
     }
 }
 
-/// Сочетание клавиш.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct KeyChord {
     pub modifiers: Modifiers,
@@ -106,7 +94,6 @@ const fn named(k: NamedKey) -> Key {
     Key::Named(k)
 }
 
-/// Горячие клавиши Firefox для Windows.
 pub fn default_shortcuts() -> Vec<(KeyChord, Command)> {
     use Command::*;
     use Modifiers as M;
@@ -164,7 +151,6 @@ pub fn default_shortcuts() -> Vec<(KeyChord, Command)> {
     table
 }
 
-/// Найти команду для сочетания клавиш.
 pub fn lookup(shortcuts: &[(KeyChord, Command)], chord: KeyChord) -> Option<Command> {
     shortcuts
         .iter()

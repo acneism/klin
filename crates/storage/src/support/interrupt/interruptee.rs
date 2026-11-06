@@ -4,9 +4,6 @@ License, v. 2.0. If a copy of the MPL was not distributed with this
 
 use crate::support::interrupt::Interrupted;
 
-/// Represents the state of something that may be interrupted. Decoupled from
-/// the interrupt mechanics so that things which want to check if they have been
-/// interrupted are simpler.
 pub trait Interruptee {
     fn was_interrupted(&self) -> bool;
 
@@ -18,7 +15,6 @@ pub trait Interruptee {
     }
 }
 
-/// A convenience implementation, should only be used in tests.
 pub struct NeverInterrupts;
 
 impl Interruptee for NeverInterrupts {

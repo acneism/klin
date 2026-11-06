@@ -1,9 +1,3 @@
-//! Запросы страницы: диалоги alert/confirm/prompt, вход на сайт, разрешения,
-//! контекстное меню и выпадающие списки.
-//!
-//! Как в Firefox, диалоги модальны для вкладки: страница затемнена и не получает ввод,
-//! но остальная часть окна работает. Запрос разрешения не модален (панель под адресной строкой).
-
 use std::collections::HashMap;
 
 use egui::{Align2, Color32, Key, Rect, RichText, Vec2, pos2, vec2};
@@ -21,7 +15,6 @@ pub(crate) struct RequestUi {
 }
 
 impl RequestUi {
-    /// Нарисовать первый запрос вкладки. Возвращает `true`, если страница заблокирована.
     pub fn show(
         &mut self,
         ctx: &egui::Context,
@@ -73,7 +66,6 @@ impl RequestUi {
                 true
             }
             RequestKind::FilePicker { .. } => {
-                // Системный диалог открыт приложением; страница ждёт.
                 dim(ctx, page);
                 true
             }
@@ -218,7 +210,6 @@ fn message_text(ui: &mut egui::Ui, message: &str) {
         });
 }
 
-/// «ОК» и, если задано, кнопка отмены. `Some(true)` — ОК, `Some(false)` — отмена.
 fn buttons(ui: &mut egui::Ui, cancel: Option<&str>) -> Option<bool> {
     let mut result = None;
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -239,7 +230,6 @@ fn buttons(ui: &mut egui::Ui, cancel: Option<&str>) -> Option<bool> {
     result
 }
 
-/// Затемнить страницу под модальным диалогом.
 fn dim(ctx: &egui::Context, page: Rect) {
     let layer = egui::LayerId::new(egui::Order::Middle, egui::Id::new("klin-dim"));
     ctx.layer_painter(layer)
@@ -286,21 +276,17 @@ fn permission_panel(
                 });
         });
     if reply.is_none() && ctx.input(|i| i.key_pressed(Key::Escape)) {
-        // Esc закрывает панель без решения — для страницы это отказ, как «Не сейчас».
         reply = Some(Reply::Dismiss);
     }
     reply
 }
 
-/// Новое нажатие кнопки мыши вне всплывающего окна. Отпускание кнопки не считается:
-/// меню и списки открываются по нажатию, и его отпускание пришло бы «мимо».
 fn pressed_outside(ctx: &egui::Context, popup: Rect) -> bool {
     ctx.input(|i| {
         i.pointer.any_pressed() && i.pointer.press_origin().is_some_and(|p| !popup.contains(p))
     })
 }
 
-/// Подписи пунктов — как в контекстном меню Firefox.
 pub(crate) fn menu_label(action: MenuAction) -> &'static str {
     match action {
         MenuAction::Back => "Назад",

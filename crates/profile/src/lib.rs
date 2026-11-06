@@ -1,12 +1,3 @@
-//! Папка профиля — по устройству профиля Firefox.
-//!
-//! - `%APPDATA%\Klin\profiles.ini` — список профилей (формат Firefox, `[ProfileN]`, `[General]`);
-//! - `%APPDATA%\Klin\Profiles\<8 символов>.default-release` — данные пользователя;
-//! - `%LOCALAPPDATA%\Klin\Profiles\<то же имя>` — кэш, который можно удалить без потерь;
-//! - `parent.lock` в папке профиля — блокировка: профилем пользуется один процесс.
-//!
-//! Вне Windows (платформы не поддерживаются, но код собирается) база — `~/.klin`.
-
 mod ini;
 
 use std::fs::{self, File};
@@ -16,14 +7,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use ini::Ini;
 
-/// Название папки браузера в %APPDATA% и %LOCALAPPDATA%.
 pub const APP_DIR: &str = "Klin";
-/// Имя профиля по умолчанию, как у выпускового канала Firefox.
+
 pub const DEFAULT_PROFILE_NAME: &str = "default-release";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProfileError {
-    /// Профиль занят другим процессом. В Firefox: «Firefox уже запущен, но не отвечает».
     #[error("профиль {0} уже используется другим процессом Klin")]
     Locked(PathBuf),
     #[error("не найдена папка для профиля: {0}")]
@@ -43,19 +32,14 @@ fn io_err(path: &Path) -> impl FnOnce(io::Error) -> ProfileError + '_ {
     }
 }
 
-/// Открытый (заблокированный) профиль. Блокировка снимается при уничтожении.
 #[derive(Debug)]
 pub struct Profile {
-    /// Данные пользователя: базы, настройки, сессия.
     pub dir: PathBuf,
-    /// Кэш (в Firefox — папка в %LOCALAPPDATA%).
     pub cache_dir: PathBuf,
     _lock: File,
 }
 
 impl Profile {
-    /// Открыть профиль: явный путь (`-profile <путь>`, как в Firefox) или профиль по умолчанию
-    /// из profiles.ini; при первом запуске профиль создаётся.
     pub fn open(explicit: Option<PathBuf>) -> Result<Self, ProfileError> {
         let (dir, cache_dir) = match explicit {
             Some(dir) => {
@@ -99,13 +83,11 @@ impl Profile {
         })
     }
 
-    /// Путь к файлу в папке профиля.
     pub fn path(&self, name: &str) -> PathBuf {
         self.dir.join(name)
     }
 }
 
-/// `times.json` с моментом создания профиля в миллисекундах — как в Firefox.
 fn write_times_json(dir: &Path) -> Result<(), ProfileError> {
     let ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -142,7 +124,6 @@ fn local_base() -> Result<PathBuf, ProfileError> {
         .ok_or(ProfileError::NoHome("HOME"))
 }
 
-/// Относительный путь профиля по умолчанию из `profiles.ini`; при необходимости создаёт его.
 pub fn default_profile(base: &Path) -> Result<PathBuf, ProfileError> {
     let ini_path = base.join("profiles.ini");
     let mut ini = match fs::read_to_string(&ini_path) {
@@ -179,14 +160,13 @@ pub fn default_profile(base: &Path) -> Result<PathBuf, ProfileError> {
     ini.set("General", "StartWithLastProfile", "1");
     ini.set("General", "Version", "2");
     fs::create_dir_all(base).map_err(io_err(base))?;
-    // Атомарная запись: временный файл + переименование.
+
     let tmp = base.join("profiles.ini.tmp");
     fs::write(&tmp, ini.to_string()).map_err(io_err(&tmp))?;
     fs::rename(&tmp, &ini_path).map_err(io_err(&ini_path))?;
     Ok(["Profiles", folder.as_str()].iter().collect())
 }
 
-/// 8 символов `[a-z0-9]`, как в именах папок профилей Firefox.
 fn random_salt() -> String {
     use std::hash::{BuildHasher, Hasher};
     const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
