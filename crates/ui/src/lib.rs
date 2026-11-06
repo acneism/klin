@@ -153,6 +153,19 @@ impl BrowserUi {
             self.nav_bar(ui, selected, browser.downloads(), &mut actions);
         });
 
+        if browser.window(window).is_some_and(|w| w.private) {
+            egui::Panel::top("klin-private-notice").show(root, |ui| {
+                ui.add_space(2.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("Приватный просмотр").strong());
+                    ui.label(
+                        "История посещений и сессия этого окна не сохраняются. Но cookies и данные \
+                         сайтов пока общие с обычными окнами: движок Servo ещё не умеет их разделять.",
+                    );
+                });
+                ui.add_space(2.0);
+            });
+        }
         if self.history_open {
             egui::Panel::left("klin-history-sidebar")
                 .resizable(true)
