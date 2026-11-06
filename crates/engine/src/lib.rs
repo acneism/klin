@@ -17,7 +17,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use euclid::Scale;
-use klin_core::{Engine, EngineEvent, InputEvent, MenuAction, Reply};
+use klin_core::{Engine, EngineEvent, FindDirection, FindRequest, InputEvent, MenuAction, Reply};
 use klin_shared::{RequestId, TabId, Url, WindowId};
 use log::warn;
 use raw_window_handle::{DisplayHandle, WindowHandle};
@@ -61,6 +61,23 @@ pub struct EngineConfig {
 
 /// См. [`ServoEngine::page_blitter`].
 pub type PageBlitter = Box<dyn Fn(&glow::Context, [i32; 4]) + Send + Sync>;
+
+/// Скрипт поиска на странице (`js/find.js`).
+const FIND_JS: &str = include_str!("../js/find.js");
+
+fn parse_find_result(json: &str) -> Option<klin_core::FindResult> {
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    let wrapped = match value.get("wrapped").and_then(|w| w.as_str()) {
+        Some("top") => Some(klin_core::FindWrap::FromTop),
+        Some("bottom") => Some(klin_core::FindWrap::FromBottom),
+        _ => None,
+    };
+    Some(klin_core::FindResult {
+        current: value.get("current")?.as_u64()? as usize,
+        total: value.get("total")?.as_u64()? as usize,
+        wrapped,
+    })
+}
 
 /// Servo не принимает буферы нулевого размера (свёрнутое окно).
 fn non_zero(width: u32, height: u32) -> dpi::PhysicalSize<u32> {
@@ -259,9 +276,12 @@ impl ServoEngine {
         if surface.page_context.size() == size {
             return;
         }
-        surface.page_context.resize(size);
-        for webview in self.shared.webviews_of(window) {
-            webview.resize(size);
+        // Размер контекста меняет сам Servo в WebView::resize: он же обновляет область
+        // просмотра страниц. Если изменить контекст заранее, Servo решит, что размер
+        // не изменился, и страница останется прежнего размера (innerHeight окна целиком).
+        match self.shared.webviews_of(window).first() {
+            Some(webview) => webview.resize(size),
+            None => surface.page_context.resize(size),
         }
     }
 
@@ -390,6 +410,46 @@ impl Engine for ServoEngine {
             return;
         };
         webview.notify_input_event(convert::input_event(input));
+    }
+
+    fn find(&mut self, tab: TabId, request: FindRequest) {
+        let Some(webview) = self.webview(tab) else {
+            return;
+        };
+        let direction = match request.direction {
+            FindDirection::First => "first",
+            FindDirection::Next => "next",
+            FindDirection::Previous => "previous",
+            FindDirection::Clear => "clear",
+        };
+        // Запрос передаётся строковым литералом JSON — он же корректный литерал JS.
+        let query = serde_json::to_string(&request.query).unwrap_or_else(|_| "\"\"".into());
+        let script = format!(
+            "({})({query}, {}, {}, \"{direction}\")",
+            FIND_JS.trim().trim_end_matches(';'),
+            request.case_sensitive,
+            request.whole_word
+        );
+        let shared = self.shared.clone();
+        webview.evaluate_javascript(script, move |result| {
+            let result = match result {
+                Ok(servo::JSValue::String(json)) => parse_find_result(&json),
+                Ok(other) => {
+                    log::debug!("find: unexpected result {other:?}");
+                    None
+                }
+                Err(error) => {
+                    log::debug!("find: {error:?}");
+                    None
+                }
+            };
+            if let Some(result) = result {
+                shared
+                    .events
+                    .borrow_mut()
+                    .push_back(EngineEvent::FindResult { tab, result });
+            }
+        });
     }
 
     fn answer(&mut self, request: RequestId, reply: Reply) {

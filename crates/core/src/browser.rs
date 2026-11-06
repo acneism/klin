@@ -38,6 +38,8 @@ pub struct Tab {
     /// У вкладки есть страница в движке. Восстановленные вкладки создаются без неё
     /// и загружаются при первом выборе (`browser.sessionstore.restore_on_demand`).
     pub loaded: bool,
+    /// Последний результат поиска на странице.
+    pub find_result: Option<crate::engine::FindResult>,
     /// Движок уже сообщил адрес документа. До этого `url` — только запрошенный адрес,
     /// и первый `UrlChanged` с тем же адресом — это настоящее посещение.
     pub committed: bool,
@@ -129,6 +131,13 @@ pub enum UiEffect {
     RemoveBookmark(Url),
     /// Показать панель закладки у звёздочки (как «Изменить закладку» в Firefox).
     ShowBookmarkPanel(WindowId),
+    /// Открыть панель поиска и поставить фокус в поле (Ctrl+F).
+    ShowFindBar(WindowId),
+    /// Следующее или предыдущее совпадение (F3, Shift+F3); без запроса — открыть панель.
+    FindAgain {
+        window: WindowId,
+        backwards: bool,
+    },
     /// Открыть или закрыть боковую панель истории (Ctrl+H).
     ToggleHistorySidebar(WindowId),
     /// Масштаб сайта изменился и должен быть сохранён (`None` — сброшен к 100 %).
@@ -318,6 +327,7 @@ impl Browser {
                 history: Vec::new(),
                 history_index: 0,
                 loaded: true,
+                find_result: None,
             },
         );
         let tabs = &self.tabs;
@@ -553,6 +563,23 @@ impl Browser {
         }
     }
 
+    /// Искать на странице во вкладке. При закрытии панели — [`FindDirection::Clear`].
+    pub fn find(
+        &mut self,
+        engine: &mut dyn Engine,
+        tab: TabId,
+        request: crate::engine::FindRequest,
+    ) {
+        if let Some(t) = self.tabs.get_mut(&tab) {
+            if request.direction == crate::engine::FindDirection::Clear {
+                t.find_result = None;
+            }
+            if t.loaded {
+                engine.find(tab, request);
+            }
+        }
+    }
+
     /// Ответ хранилища: есть ли закладка на адрес. Обновляет все вкладки с этим адресом.
     pub fn set_bookmarked(&mut self, url: &Url, bookmarked: bool) {
         for tab in self.tabs.values_mut() {
@@ -620,6 +647,19 @@ impl Browser {
             }
             NextTab | PreviousTab | SelectLastTab => {}
             ToggleHistorySidebar => return vec![UiEffect::ToggleHistorySidebar(window)],
+            Find => return vec![UiEffect::ShowFindBar(window)],
+            FindAgain => {
+                return vec![UiEffect::FindAgain {
+                    window,
+                    backwards: false,
+                }];
+            }
+            FindPrevious => {
+                return vec![UiEffect::FindAgain {
+                    window,
+                    backwards: true,
+                }];
+            }
             Bookmark => {
                 // Как Ctrl+D и звёздочка в Firefox: новая закладка создаётся сразу, затем
                 // открывается панель закладки; для уже существующей — только панель.
@@ -641,10 +681,7 @@ impl Browser {
                 effects.push(UiEffect::ShowBookmarkPanel(window));
                 return effects;
             }
-            Find
-            | FindAgain
-            | FindPrevious
-            | ToggleBookmarksToolbar
+            ToggleBookmarksToolbar
             | ShowAllBookmarks
             | ShowAllHistory
             | ToggleReaderMode
@@ -876,6 +913,12 @@ impl Browser {
                 return vec![UiEffect::Redraw(tab)];
             }
             EngineEvent::NewFrame { tab } => return vec![UiEffect::Redraw(tab)],
+            EngineEvent::FindResult { tab, result } => {
+                if let Some(t) = self.tabs.get_mut(&tab) {
+                    t.find_result = Some(result);
+                }
+                return vec![UiEffect::Redraw(tab)];
+            }
             EngineEvent::DownloadRequested { tab, url, referrer } => {
                 // Переход отменён движком: вкладка остаётся на прежней странице. Если это была
                 // новая пустая вкладка, открытая только ради файла, Firefox её закрывает.

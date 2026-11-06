@@ -622,6 +622,7 @@ impl Running {
             Action::Execute(cmd) => self.execute(event_loop, id, cmd),
             Action::SelectTab(tab) => self.browser.select_tab(&mut self.engine, tab),
             Action::MoveTab { tab, index } => self.browser.move_tab(tab, index),
+            Action::Find { tab, request } => self.browser.find(&mut self.engine, tab, request),
             Action::CancelDownload(download) => self.downloads.cancel(download),
             Action::OpenDownload(path) => {
                 if let Err(e) = klin_platform_win::shell::open(&path) {
@@ -785,6 +786,26 @@ impl Running {
                     }
                 }
                 UiEffect::ToggleHistorySidebar(window) => self.toggle_history(window),
+                UiEffect::ShowFindBar(window) => {
+                    let tab = self.browser.window(window).and_then(|w| w.selected_tab());
+                    if let (Some(tab), Some(w)) = (tab, self.win_mut(window)) {
+                        w.ui.show_find_bar(tab);
+                        w.window.request_redraw();
+                    }
+                }
+                UiEffect::FindAgain { window, backwards } => {
+                    let tab = self.browser.window(window).and_then(|w| w.selected_tab());
+                    let action = match (tab, self.win_mut(window)) {
+                        (Some(tab), Some(w)) => {
+                            w.window.request_redraw();
+                            w.ui.find_again(tab, backwards)
+                        }
+                        _ => None,
+                    };
+                    if let Some(action) = action {
+                        self.act(event_loop, window, action);
+                    }
+                }
                 UiEffect::ToggleDownloadsPanel(window) => {
                     if let Some(w) = self.win_mut(window) {
                         w.ui.toggle_downloads();

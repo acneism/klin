@@ -20,6 +20,8 @@ pub trait Engine {
     /// Показать вкладку в окне (выбранная вкладка) или спрятать её.
     fn set_visible(&mut self, tab: TabId, visible: bool);
     fn send_input(&mut self, tab: TabId, input: InputEvent);
+    /// Поиск на странице (Ctrl+F); результат придёт событием [`EngineEvent::FindResult`].
+    fn find(&mut self, tab: TabId, request: FindRequest);
     /// Ответ на запрос страницы: диалог, разрешение, файл, меню.
     fn answer(&mut self, request: RequestId, reply: Reply);
 }
@@ -75,6 +77,11 @@ pub enum EngineEvent {
     NewFrame {
         tab: TabId,
     },
+    /// Результат поиска на странице.
+    FindResult {
+        tab: TabId,
+        result: FindResult,
+    },
     /// Переход распознан как загрузка файла и отменён в движке; файл скачивает служба загрузок.
     DownloadRequested {
         tab: TabId,
@@ -88,6 +95,44 @@ pub enum EngineEvent {
         tab: TabId,
         reason: String,
     },
+}
+
+/// Что искать на странице — параметры панели поиска Firefox.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FindRequest {
+    pub query: String,
+    /// «С учётом регистра»
+    pub case_sensitive: bool,
+    /// «Только слова целиком»
+    pub whole_word: bool,
+    pub direction: FindDirection,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FindDirection {
+    /// Новый запрос: первое совпадение.
+    First,
+    Next,
+    Previous,
+    /// Панель закрыта: снять выделение.
+    Clear,
+}
+
+/// Итог поиска: текущее совпадение (с единицы) и сколько всего.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FindResult {
+    pub current: usize,
+    pub total: usize,
+    /// Поиск перешёл через конец или начало страницы.
+    pub wrapped: Option<FindWrap>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FindWrap {
+    /// «Достигнут конец страницы, продолжено с начала»
+    FromTop,
+    /// «Достигнуто начало страницы, продолжено с конца»
+    FromBottom,
 }
 
 /// Вид запроса страницы к встраивателю.

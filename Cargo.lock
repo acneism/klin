@@ -3313,6 +3313,7 @@ dependencies = [
  "klin-shared",
  "log",
  "raw-window-handle",
+ "serde_json",
  "servo",
  "url",
 ]

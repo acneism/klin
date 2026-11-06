@@ -20,6 +20,9 @@ pub enum Icon {
     /// Звёздочка закладки: контур и залитая.
     Star,
     StarFilled,
+    /// Стрелки «следующее / предыдущее совпадение».
+    Down,
+    Up,
 }
 
 /// Кнопка-значок размером `size` точек.
@@ -156,6 +159,12 @@ pub fn paint(painter: &egui::Painter, r: Rect, icon: Icon, color: Color32) {
                 closed.push(points[0]);
                 line(closed);
             }
+        }
+        Icon::Down => {
+            line(vec![at(0.1, 0.3), at(0.5, 0.75), at(0.9, 0.3)]);
+        }
+        Icon::Up => {
+            line(vec![at(0.1, 0.7), at(0.5, 0.25), at(0.9, 0.7)]);
         }
         Icon::Plus => {
             line(vec![at(0.5, 0.0), at(0.5, 1.0)]);

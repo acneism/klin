@@ -19,7 +19,7 @@ pub mod zoom;
 pub use browser::{Browser, ClosedTab, Tab, VisitKind, Window};
 pub use command::{Command, KeyChord, default_shortcuts};
 pub use engine::{
-    Engine, EngineEvent, MenuAction, MenuItem, PageRequest, PermissionFeature, Reply, RequestKind,
-    SelectOption,
+    Engine, EngineEvent, FindDirection, FindRequest, FindResult, FindWrap, MenuAction, MenuItem,
+    PageRequest, PermissionFeature, Reply, RequestKind, SelectOption,
 };
 pub use input::InputEvent;

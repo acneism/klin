@@ -21,6 +21,7 @@ pub enum Call {
     SetZoom(TabId, f32),
     SetVisible(TabId, bool),
     SendInput(TabId, InputEvent),
+    Find(TabId, crate::engine::FindRequest),
     Answer(RequestId, Reply),
 }
 
@@ -69,6 +70,9 @@ impl Engine for FakeEngine {
     }
     fn send_input(&mut self, tab: TabId, input: InputEvent) {
         self.calls.push(Call::SendInput(tab, input));
+    }
+    fn find(&mut self, tab: TabId, request: crate::engine::FindRequest) {
+        self.calls.push(Call::Find(tab, request));
     }
     fn answer(&mut self, request: RequestId, reply: Reply) {
         self.calls.push(Call::Answer(request, reply));

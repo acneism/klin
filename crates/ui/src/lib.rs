@@ -7,6 +7,7 @@
 
 mod downloads;
 mod favicons;
+mod findbar;
 mod icons;
 mod places_ui;
 mod requests;
@@ -47,6 +48,11 @@ pub enum Action {
     RemoveBookmark(klin_shared::Url),
     /// Открыть или закрыть боковую панель истории.
     ToggleHistorySidebar,
+    /// Поиск на странице.
+    Find {
+        tab: TabId,
+        request: klin_core::FindRequest,
+    },
     /// Вкладку перетащили на позицию `index`.
     MoveTab {
         tab: TabId,
@@ -92,6 +98,7 @@ pub struct BrowserUi {
     history_open: bool,
     history: Vec<HistoryItem>,
     history_filter: String,
+    find_bars: findbar::FindBars,
 }
 
 fn url_bar_id() -> egui::Id {
@@ -117,6 +124,16 @@ impl BrowserUi {
             self.suggestions_query = query.to_owned();
             self.suggestion_selected = None;
         }
+    }
+
+    /// Открыть панель поиска во вкладке (Ctrl+F).
+    pub fn show_find_bar(&mut self, tab: TabId) {
+        self.find_bars.open(tab);
+    }
+
+    /// F3 / Shift+F3. Возвращает действие поиска, если запрос уже есть.
+    pub fn find_again(&mut self, tab: TabId, backwards: bool) -> Option<Action> {
+        self.find_bars.again(tab, backwards)
     }
 
     /// Показать панель закладки у звёздочки.
@@ -181,6 +198,17 @@ impl BrowserUi {
                         &mut actions,
                     );
                 });
+        }
+
+        if let Some(tab) = selected
+            && let Some(bar) = self.find_bars.get_mut(tab.id)
+        {
+            egui::Panel::bottom("klin-findbar").show(root, |ui| {
+                findbar::show(ui, tab, bar, &mut actions);
+            });
+        }
+        if let Some(win) = browser.window(window) {
+            self.find_bars.retain(|t| win.tabs.contains(&t));
         }
 
         let mut page_rect = Rect::NOTHING;

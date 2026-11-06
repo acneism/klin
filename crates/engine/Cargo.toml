@@ -19,6 +19,7 @@ euclid.workspace = true
 # Версии ниже совпадают с зависимостями servo 0.7.0: их типы проходят через API движка.
 dpi = "0.1"
 http = "1.4"
+serde_json = "1"
 keyboard-types = "0.8.3"
 raw-window-handle = "0.6"
 glow.workspace = true
