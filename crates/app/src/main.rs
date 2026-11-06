@@ -27,7 +27,7 @@ const APP_NAME: &str = "Klin";
 struct Wake;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    // Логгер не ставим: его устанавливает `Servo::setup_logging` (env_logger, переменная RUST_LOG).
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
         .map_err(|_| "failed to install rustls crypto provider")?;
