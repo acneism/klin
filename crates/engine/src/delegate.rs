@@ -1,6 +1,6 @@
 //! `WebViewDelegate`: события Servo → события ядра.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::{Rc, Weak};
 
@@ -8,7 +8,7 @@ use euclid::Scale;
 use klin_core::{
     EngineEvent, MenuAction, MenuItem, PermissionFeature, Reply, RequestKind, SelectOption,
 };
-use klin_shared::{Disposition, LoadStatus, RequestId, TabId, Url};
+use klin_shared::{Disposition, LoadStatus, RequestId, TabId, Url, WindowId};
 use servo::{
     AuthenticationRequest, ContextMenu, ContextMenuAction, ContextMenuItem,
     CreateNewWebViewRequest, DeviceIntRect, EmbedderControl, EmbedderControlId, FilePicker,
@@ -16,36 +16,59 @@ use servo::{
     SimpleDialog, WebView, WebViewDelegate, WebViewId,
 };
 
+use crate::Surface;
 use crate::protocol;
 
 /// Состояние, общее для движка и делегата (всё в главном потоке).
+#[derive(Default)]
 pub(crate) struct Shared {
+    pub surfaces: RefCell<HashMap<WindowId, Rc<Surface>>>,
+    pub tab_window: RefCell<HashMap<TabId, WindowId>>,
     pub events: RefCell<VecDeque<EngineEvent>>,
     pub tabs: RefCell<HashMap<WebViewId, TabId>>,
     pub webviews: RefCell<HashMap<TabId, WebView>>,
     pub pending: RefCell<HashMap<RequestId, (TabId, Pending)>>,
     /// Элементы управления, которые Servo может снять сам (`hide_embedder_control`).
     pub controls: RefCell<Vec<(EmbedderControlId, TabId, RequestId)>>,
-    pub visible: RefCell<Option<TabId>>,
+    /// Видимая вкладка каждого окна.
+    pub visible: RefCell<HashMap<WindowId, TabId>>,
     /// Вкладка, из которой выбрали «Открыть ссылку в новой вкладке»: следующая вкладка
     /// от неё открывается в фоне (`browser.tabs.loadInBackground`).
     pub background_opener: RefCell<Option<TabId>>,
 }
 
 impl Shared {
-    pub fn register(&self, webview: WebView) -> TabId {
+    pub fn register(&self, webview: WebView, window: WindowId) -> TabId {
         let tab = TabId::next();
         self.tabs.borrow_mut().insert(webview.id(), tab);
         self.webviews.borrow_mut().insert(tab, webview);
+        self.tab_window.borrow_mut().insert(tab, window);
         tab
+    }
+
+    pub fn window_of(&self, tab: TabId) -> Option<WindowId> {
+        self.tab_window.borrow().get(&tab).copied()
+    }
+
+    pub fn webviews_of(&self, window: WindowId) -> Vec<WebView> {
+        let tab_window = self.tab_window.borrow();
+        self.webviews
+            .borrow()
+            .iter()
+            .filter(|(tab, _)| tab_window.get(tab) == Some(&window))
+            .map(|(_, w)| w.clone())
+            .collect()
     }
 
     pub fn unregister(&self, tab: TabId) {
         if let Some(webview) = self.webviews.borrow_mut().remove(&tab) {
             self.tabs.borrow_mut().remove(&webview.id());
         }
-        if *self.visible.borrow() == Some(tab) {
-            *self.visible.borrow_mut() = None;
+        if let Some(window) = self.tab_window.borrow_mut().remove(&tab) {
+            let mut visible = self.visible.borrow_mut();
+            if visible.get(&window) == Some(&tab) {
+                visible.remove(&window);
+            }
         }
         // Отпущенные запросы Servo закрывает сам со значением по умолчанию.
         self.pending.borrow_mut().retain(|_, (t, _)| *t != tab);
@@ -191,27 +214,15 @@ fn select_options(options: &[SelectElementOptionOrOptgroup]) -> Vec<SelectOption
 
 pub(crate) struct Delegate {
     shared: Rc<Shared>,
-    rendering_context: Rc<dyn RenderingContext>,
-    scale: Cell<f32>,
     this: Weak<Delegate>,
 }
 
 impl Delegate {
-    pub fn new(
-        shared: Rc<Shared>,
-        rendering_context: Rc<dyn RenderingContext>,
-        scale: f32,
-    ) -> Rc<Self> {
+    pub fn new(shared: Rc<Shared>) -> Rc<Self> {
         Rc::new_cyclic(|this| Self {
             shared,
-            rendering_context,
-            scale: Cell::new(scale),
             this: this.clone(),
         })
-    }
-
-    pub fn set_scale(&self, scale: f32) {
-        self.scale.set(scale);
     }
 
     fn with_tab(&self, webview: &WebView, f: impl FnOnce(TabId) -> EngineEvent) {
@@ -286,16 +297,23 @@ impl WebViewDelegate for Delegate {
         let Some(this) = self.this.upgrade() else {
             return;
         };
+        // Новая вкладка — в окне вкладки-источника.
+        let Some(window) = self.shared.window_of(opener) else {
+            return;
+        };
+        let Some(surface) = self.shared.surfaces.borrow().get(&window).cloned() else {
+            return;
+        };
         // WebView создаём сразу: Servo требует ответа в этом вызове, чтобы сохранить opener.
         let webview = request
-            .builder(self.rendering_context.clone())
-            .hidpi_scale_factor(Scale::new(self.scale.get()))
+            .builder(surface.page_context.clone() as Rc<dyn RenderingContext>)
+            .hidpi_scale_factor(Scale::new(surface.scale.get()))
             .delegate(this)
             .build();
         let url = webview
             .url()
             .unwrap_or_else(|| Url::parse("about:blank").expect("valid"));
-        let created = self.shared.register(webview);
+        let created = self.shared.register(webview, window);
         let background = self
             .shared
             .background_opener

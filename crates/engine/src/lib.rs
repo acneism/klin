@@ -12,8 +12,7 @@ mod convert;
 mod delegate;
 mod protocol;
 
-use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -79,38 +78,24 @@ impl std::fmt::Display for EngineError {
 
 impl std::error::Error for EngineError {}
 
-/// Движок Servo для одного окна.
-///
-/// TODO(этап 0): несколько окон — по `RenderingContext` на окно; сейчас все вкладки
-/// рисуются в контекст первого окна.
+/// Поверхность окна: GL-контекст окна и внеэкранный буфер, куда рисуют его вкладки.
+pub(crate) struct Surface {
+    window_context: Rc<WindowRenderingContext>,
+    /// Сюда рисуют WebView этого окна; размер — область страницы в окне.
+    pub page_context: Rc<OffscreenRenderingContext>,
+    pub scale: Cell<f32>,
+}
+
+/// Движок Servo: один на процесс, поверхность — на каждое окно.
 pub struct ServoEngine {
     servo: Servo,
-    window_context: Rc<WindowRenderingContext>,
-    /// Сюда рисуют все WebView; размер — область страницы в окне.
-    page_context: Rc<OffscreenRenderingContext>,
     shared: Rc<Shared>,
     delegate: Rc<Delegate>,
-    scale: f32,
 }
 
 impl ServoEngine {
-    /// Запустить Servo и привязать его к окну.
-    pub fn new(
-        display: DisplayHandle<'_>,
-        window: WindowHandle<'_>,
-        size: (u32, u32),
-        scale: f32,
-        waker: Waker,
-        config: EngineConfig,
-    ) -> Result<Self, EngineError> {
-        let window_context = Rc::new(
-            WindowRenderingContext::new(display, window, dpi::PhysicalSize::new(size.0, size.1))
-                .map_err(|e| EngineError(format!("rendering context: {e:?}")))?,
-        );
-        window_context
-            .make_current()
-            .map_err(|e| EngineError(format!("make_current: {e:?}")))?;
-
+    /// Запустить Servo. Окна добавляются через [`ServoEngine::add_window`].
+    pub fn new(waker: Waker, config: EngineConfig) -> Result<Self, EngineError> {
         let mut protocols = servo::protocol_handler::ProtocolRegistry::with_internal_protocols();
         protocols
             .register(klin_internal_pages::SCHEME, protocol::InternalPages)
@@ -132,27 +117,48 @@ impl ServoEngine {
             .build();
         servo.setup_logging();
 
-        let shared = Rc::new(Shared {
-            events: RefCell::new(VecDeque::new()),
-            tabs: RefCell::new(HashMap::new()),
-            webviews: RefCell::new(HashMap::new()),
-            pending: RefCell::new(HashMap::new()),
-            controls: RefCell::new(Vec::new()),
-            background_opener: RefCell::new(None),
-            visible: RefCell::new(None),
-        });
-        let page_context = Rc::new(window_context.offscreen_context(non_zero(size.0, size.1)));
-        let rc: Rc<dyn RenderingContext> = page_context.clone();
-        let delegate = Delegate::new(shared.clone(), rc, scale);
-
+        let shared = Rc::new(Shared::default());
+        let delegate = Delegate::new(shared.clone());
         Ok(Self {
             servo,
-            window_context,
-            page_context,
             shared,
             delegate,
-            scale,
         })
+    }
+
+    /// Подключить окно ОС: вкладки окна `window` будут рисоваться в него.
+    pub fn add_window(
+        &mut self,
+        window: WindowId,
+        display: DisplayHandle<'_>,
+        handle: WindowHandle<'_>,
+        size: (u32, u32),
+        scale: f32,
+    ) -> Result<(), EngineError> {
+        let window_context = Rc::new(
+            WindowRenderingContext::new(display, handle, dpi::PhysicalSize::new(size.0, size.1))
+                .map_err(|e| EngineError(format!("rendering context: {e:?}")))?,
+        );
+        window_context
+            .make_current()
+            .map_err(|e| EngineError(format!("make_current: {e:?}")))?;
+        let page_context = Rc::new(window_context.offscreen_context(non_zero(size.0, size.1)));
+        let surface = Surface {
+            window_context,
+            page_context,
+            scale: Cell::new(scale),
+        };
+        self.shared
+            .surfaces
+            .borrow_mut()
+            .insert(window, Rc::new(surface));
+        Ok(())
+    }
+
+    /// Окно закрыто. Его вкладки к этому моменту уже закрыты ядром.
+    pub fn remove_window(&mut self, window: WindowId) {
+        self.shared.surfaces.borrow_mut().remove(&window);
+        self.shared.visible.borrow_mut().remove(&window);
     }
 
     /// Дать движку поработать и забрать накопившиеся события.
@@ -161,31 +167,52 @@ impl ServoEngine {
         self.shared.events.borrow_mut().drain(..).collect()
     }
 
-    /// GL-контекст окна для отрисовки интерфейса (egui_glow).
-    pub fn gl(&self) -> Arc<glow::Context> {
-        self.window_context.glow_gl_api()
+    fn surface(&self, window: WindowId) -> Option<Rc<Surface>> {
+        self.shared.surfaces.borrow().get(&window).cloned()
     }
 
-    /// Начать кадр: нарисовать видимую страницу во внеэкранный буфер и подготовить окно.
-    pub fn begin_frame(&self) {
-        if let Err(e) = self.window_context.make_current() {
+    /// GL-контекст окна для отрисовки интерфейса (egui_glow).
+    pub fn gl(&self, window: WindowId) -> Option<Arc<glow::Context>> {
+        Some(self.surface(window)?.window_context.glow_gl_api())
+    }
+
+    /// Сделать GL-контекст окна текущим (например, чтобы освободить ресурсы интерфейса).
+    pub fn make_current(&self, window: WindowId) {
+        if let Some(surface) = self.surface(window)
+            && let Err(e) = surface.window_context.make_current()
+        {
             warn!("make_current failed: {e:?}");
         }
-        if let Some(webview) = self.visible_webview() {
+    }
+
+    /// Начать кадр окна: нарисовать видимую страницу во внеэкранный буфер и подготовить окно.
+    pub fn begin_frame(&self, window: WindowId) {
+        let Some(surface) = self.surface(window) else {
+            return;
+        };
+        if let Err(e) = surface.window_context.make_current() {
+            warn!("make_current failed: {e:?}");
+        }
+        if let Some(webview) = self.visible_webview(window) {
             webview.paint();
         }
-        self.window_context.prepare_for_rendering();
+        surface.window_context.prepare_for_rendering();
     }
 
     /// Показать готовый кадр окна.
-    pub fn present(&self) {
-        self.window_context.present();
+    pub fn present(&self, window: WindowId) {
+        if let Some(surface) = self.surface(window) {
+            surface.window_context.present();
+        }
     }
 
-    /// Функция, копирующая страницу в прямоугольник окна `[x, y, ширина, высота]`
+    /// Функция, копирующая страницу окна в прямоугольник `[x, y, ширина, высота]`
     /// в пикселях устройства, начало координат — внизу слева (как в OpenGL).
-    pub fn page_blitter(&self) -> Option<PageBlitter> {
-        let blit = self.page_context.render_to_parent_callback()?;
+    pub fn page_blitter(&self, window: WindowId) -> Option<PageBlitter> {
+        let blit = self
+            .surface(window)?
+            .page_context
+            .render_to_parent_callback()?;
         Some(Box::new(move |gl, [x, y, w, h]| {
             blit(
                 gl,
@@ -195,39 +222,46 @@ impl ServoEngine {
     }
 
     /// Размер окна изменился.
-    pub fn resize_window(&self, width: u32, height: u32) {
-        self.window_context.resize(non_zero(width, height));
+    pub fn resize_window(&self, window: WindowId, width: u32, height: u32) {
+        if let Some(surface) = self.surface(window) {
+            surface.window_context.resize(non_zero(width, height));
+        }
     }
 
     /// Размер области страницы изменился (окно минус панели интерфейса).
-    pub fn resize_page(&self, width: u32, height: u32) {
+    pub fn resize_page(&self, window: WindowId, width: u32, height: u32) {
+        let Some(surface) = self.surface(window) else {
+            return;
+        };
         let size = non_zero(width, height);
-        if self.page_context.size() == size {
+        if surface.page_context.size() == size {
             return;
         }
-        self.page_context.resize(size);
-        for webview in self.shared.webviews.borrow().values() {
+        surface.page_context.resize(size);
+        for webview in self.shared.webviews_of(window) {
             webview.resize(size);
         }
     }
 
-    pub fn set_scale(&mut self, scale: f32) {
-        self.scale = scale;
-        self.delegate.set_scale(scale);
-        for webview in self.shared.webviews.borrow().values() {
+    pub fn set_scale(&self, window: WindowId, scale: f32) {
+        let Some(surface) = self.surface(window) else {
+            return;
+        };
+        surface.scale.set(scale);
+        for webview in self.shared.webviews_of(window) {
             webview.set_hidpi_scale_factor(Scale::new(scale));
         }
     }
 
-    /// Передать фокус ввода странице (или забрать, когда фокус в интерфейсе).
-    pub fn set_page_focused(&self, focused: bool) {
-        if let Some(webview) = self.visible_webview() {
+    /// Передать фокус ввода странице окна (или забрать, когда фокус в интерфейсе).
+    pub fn set_page_focused(&self, window: WindowId, focused: bool) {
+        if let Some(webview) = self.visible_webview(window) {
             webview.set_focused(focused);
         }
     }
 
-    fn visible_webview(&self) -> Option<WebView> {
-        let tab = (*self.shared.visible.borrow())?;
+    fn visible_webview(&self, window: WindowId) -> Option<WebView> {
+        let tab = *self.shared.visible.borrow().get(&window)?;
         self.webview(tab)
     }
 
@@ -237,18 +271,23 @@ impl ServoEngine {
 }
 
 impl Engine for ServoEngine {
-    fn open_tab(&mut self, _window: WindowId, url: &Url, private: bool) -> TabId {
+    fn open_tab(&mut self, window: WindowId, url: &Url, private: bool) -> TabId {
         if private {
             // Отдельного контекста хранилища в API Servo пока не нашли — проверить до 0.2.
             warn!("private browsing is not isolated yet");
         }
-        let rc: Rc<dyn RenderingContext> = self.page_context.clone();
+        let Some(surface) = self.surface(window) else {
+            // Ядро открывает вкладки только в окнах, для которых вызван add_window.
+            log::error!("open_tab: no surface for {window}");
+            return TabId::next();
+        };
+        let rc: Rc<dyn RenderingContext> = surface.page_context.clone();
         let webview = WebViewBuilder::new(&self.servo, rc)
             .url(protocol::internal_url(url))
-            .hidpi_scale_factor(Scale::new(self.scale))
+            .hidpi_scale_factor(Scale::new(surface.scale.get()))
             .delegate(self.delegate.clone())
             .build();
-        self.shared.register(webview)
+        self.shared.register(webview, window)
     }
 
     fn close_tab(&mut self, tab: TabId) {
@@ -299,14 +338,17 @@ impl Engine for ServoEngine {
         let Some(webview) = self.webview(tab) else {
             return;
         };
+        let Some(window) = self.shared.window_of(tab) else {
+            return;
+        };
+        let mut visible_tabs = self.shared.visible.borrow_mut();
         if visible {
             webview.show();
-            *self.shared.visible.borrow_mut() = Some(tab);
+            visible_tabs.insert(window, tab);
         } else {
             webview.hide();
-            let mut current = self.shared.visible.borrow_mut();
-            if *current == Some(tab) {
-                *current = None;
+            if visible_tabs.get(&window) == Some(&tab) {
+                visible_tabs.remove(&window);
             }
         }
     }

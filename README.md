@@ -4,7 +4,7 @@ A desktop web browser for Windows built on the [Servo](https://servo.org) engine
 Klin's own code is written in Rust. Features and behavior follow Firefox: keyboard
 shortcuts, data formats, settings.
 
-> **Status: stage 0, prototype.** One window with a tab strip, navigation buttons and an
+> **Status: stage 0, prototype.** Windows (Ctrl+N, private Ctrl+Shift+P) with a tab strip, navigation buttons and an
 > address bar drawn with egui; pages are rendered by Servo. Firefox keyboard shortcuts work
 > through the core (Ctrl+T, Ctrl+W, Ctrl+Shift+T, Ctrl+Tab, Ctrl+L, Alt+←/→, F5, Ctrl+±/0 and
 > more). Page dialogs, permission prompts, HTTP auth, the context menu, `<select>` popups

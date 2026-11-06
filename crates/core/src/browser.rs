@@ -59,7 +59,11 @@ pub struct ClosedTab {
 /// Что интерфейс должен сделать в ответ на команду или событие.
 #[derive(Clone, Debug, PartialEq)]
 pub enum UiEffect {
-    WindowOpened(WindowId),
+    /// Нужно новое окно: интерфейс создаёт окно ОС и вызывает [`Browser::open_window`].
+    OpenWindow {
+        private: bool,
+        url: Option<Url>,
+    },
     WindowClosed(WindowId),
     FocusUrlBar(WindowId),
     /// У вкладки появился запрос, который интерфейс не рисует сам (выбор файла).
@@ -116,14 +120,15 @@ impl Browser {
         &self.search
     }
 
-    /// Новое окно с одной вкладкой.
+    /// Новое окно с одной вкладкой. Идентификатор выдаёт вызывающий: окно ОС и поверхность
+    /// движка для него должны существовать до того, как в окне появится первая вкладка.
     pub fn open_window(
         &mut self,
         engine: &mut dyn Engine,
+        id: WindowId,
         private: bool,
         url: Option<Url>,
     ) -> WindowId {
-        let id = WindowId::next();
         self.windows.push(Window {
             id,
             private,
@@ -368,8 +373,10 @@ impl Browser {
         let current = win.selected;
         match command {
             NewWindow | NewPrivateWindow => {
-                let id = self.open_window(engine, command == NewPrivateWindow, None);
-                return vec![UiEffect::WindowOpened(id)];
+                return vec![UiEffect::OpenWindow {
+                    private: command == NewPrivateWindow,
+                    url: None,
+                }];
             }
             CloseWindow => return self.close_window(engine, window),
             NewTab => {
@@ -551,8 +558,10 @@ impl Browser {
                             engine.close_tab(tab);
                         }
                         let private = self.window(window).is_some_and(|w| w.private);
-                        let id = self.open_window(engine, private, Some(url));
-                        return vec![UiEffect::WindowOpened(id)];
+                        return vec![UiEffect::OpenWindow {
+                            private,
+                            url: Some(url),
+                        }];
                     }
                     Disposition::ForegroundTab => {
                         self.insert_tab(engine, window, url, Some(opener), true, created);
@@ -625,7 +634,12 @@ mod tests {
     fn setup() -> (Browser, FakeEngine, WindowId) {
         let mut b = Browser::new();
         let mut e = FakeEngine::default();
-        let w = b.open_window(&mut e, false, Some(url("https://a.example/")));
+        let w = b.open_window(
+            &mut e,
+            WindowId::next(),
+            false,
+            Some(url("https://a.example/")),
+        );
         (b, e, w)
     }
 
@@ -732,6 +746,27 @@ mod tests {
     }
 
     #[test]
+    fn new_window_is_requested_from_ui() {
+        let (mut b, mut e, w) = setup();
+        let effects = b.execute(&mut e, w, Command::NewPrivateWindow);
+        assert_eq!(
+            effects,
+            [UiEffect::OpenWindow {
+                private: true,
+                url: None
+            }]
+        );
+        let id = WindowId::next();
+        b.open_window(&mut e, id, true, None);
+        assert!(b.window(id).unwrap().private);
+        assert!(
+            e.calls
+                .iter()
+                .any(|c| matches!(c, Call::OpenTab(_, win, _, true) if *win == id))
+        );
+    }
+
+    #[test]
     fn ctrl_tab_wraps_around() {
         let (mut b, mut e, w) = setup();
         b.execute(&mut e, w, Command::NewTab);
@@ -800,7 +835,12 @@ mod tests {
     fn private_window_zoom_is_not_saved() {
         let mut b = Browser::new();
         let mut e = FakeEngine::default();
-        let w = b.open_window(&mut e, true, Some(url("https://p.example/")));
+        let w = b.open_window(
+            &mut e,
+            WindowId::next(),
+            true,
+            Some(url("https://p.example/")),
+        );
         assert!(b.execute(&mut e, w, Command::ZoomIn).is_empty());
     }
 

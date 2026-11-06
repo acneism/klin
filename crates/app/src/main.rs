@@ -105,7 +105,10 @@ enum App {
     Failed,
 }
 
-struct Running {
+/// Окно браузера: окно ОС, egui и состояние интерфейса этого окна.
+struct BrowserWindow {
+    id: WindowId,
+    private: bool,
     egui_state: egui_winit::State,
     painter: egui_glow::Painter,
     ui: BrowserUi,
@@ -113,19 +116,35 @@ struct Running {
     page_rect: [f32; 4],
     ui_has_focus: bool,
     page_blocked: bool,
+    modifiers: ModifiersState,
+    cursor: (f32, f32),
+    title: String,
+    window: Window,
+}
+
+impl BrowserWindow {
+    /// Точка окна → точка страницы, если она внутри страницы.
+    fn page_point(&self) -> Option<(f32, f32)> {
+        if self.page_blocked {
+            return None;
+        }
+        let [px, py, w, h] = self.page_rect;
+        let (lx, ly) = (self.cursor.0 - px, self.cursor.1 - py);
+        (lx >= 0.0 && ly >= 0.0 && lx < w && ly < h).then_some((lx, ly))
+    }
+}
+
+struct Running {
     proxy: EventLoopProxy<Wake>,
     picked_tx: Sender<file_picker::Picked>,
     picked_rx: Receiver<file_picker::Picked>,
     content_prefs: ContentPrefs,
     zoom_rx: Receiver<Vec<(String, f64)>>,
-    // Порядок важен: движок отпускается раньше окна.
-    engine: ServoEngine,
-    window: Window,
     browser: Browser,
-    browser_window: WindowId,
     shortcuts: Vec<(KeyChord, Command)>,
-    modifiers: ModifiersState,
-    cursor: (f32, f32),
+    // Порядок важен: движок (и GL-контексты окон) отпускается раньше окон ОС.
+    engine: ServoEngine,
+    windows: Vec<BrowserWindow>,
     /// Последним: блокировка профиля снимается, когда всё остальное уже закрыто.
     _profile: Profile,
 }
@@ -162,11 +181,18 @@ impl ApplicationHandler<Wake> for App {
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
-        _: winit::window::WindowId,
+        os_id: winit::window::WindowId,
         event: WindowEvent,
     ) {
         if let App::Running(app) = self {
-            app.window_event(event_loop, event);
+            if let Some(id) = app
+                .windows
+                .iter()
+                .find(|w| w.window.id() == os_id)
+                .map(|w| w.id)
+            {
+                app.window_event(event_loop, id, event);
+            }
             app.spin(event_loop);
         }
     }
@@ -179,8 +205,6 @@ impl Running {
         start_url: Option<Url>,
         profile: Profile,
     ) -> Result<Self, Box<dyn Error>> {
-        let window = event_loop.create_window(WindowAttributes::default().with_title(APP_NAME))?;
-        let size = window.inner_size();
         let waker = {
             let proxy = proxy.clone();
             Waker::new(move || {
@@ -188,11 +212,7 @@ impl Running {
                 let _ = proxy.send_event(Wake);
             })
         };
-        let mut engine = ServoEngine::new(
-            event_loop.display_handle()?,
-            window.window_handle()?,
-            (size.width, size.height),
-            window.scale_factor() as f32,
+        let engine = ServoEngine::new(
             waker,
             EngineConfig {
                 data_dir: Some(profile.dir.clone()),
@@ -210,46 +230,108 @@ impl Running {
                 let _ = proxy.send_event(Wake);
             });
         }
-        let mut browser = Browser::new();
-        let browser_window = browser.open_window(&mut engine, false, start_url.clone());
+        let (picked_tx, picked_rx) = channel();
+        let mut running = Self {
+            proxy,
+            picked_tx,
+            picked_rx,
+            content_prefs,
+            zoom_rx,
+            browser: Browser::new(),
+            shortcuts: default_shortcuts(),
+            engine,
+            windows: Vec::new(),
+            _profile: profile,
+        };
+        running.open_window(event_loop, false, start_url)?;
+        Ok(running)
+    }
 
-        let painter = egui_glow::Painter::new(engine.gl(), "", None, false)
+    /// Создать окно ОС, его поверхность в движке и окно в ядре с первой вкладкой.
+    fn open_window(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        private: bool,
+        url: Option<Url>,
+    ) -> Result<WindowId, Box<dyn Error>> {
+        let window = event_loop.create_window(WindowAttributes::default().with_title(APP_NAME))?;
+        let id = WindowId::next();
+        let size = window.inner_size();
+        let scale = window.scale_factor() as f32;
+        self.engine.add_window(
+            id,
+            event_loop.display_handle()?,
+            window.window_handle()?,
+            (size.width, size.height),
+            scale,
+        )?;
+        let gl = self
+            .engine
+            .gl(id)
+            .ok_or("no GL context for the new window")?;
+        let painter = egui_glow::Painter::new(gl, "", None, false)
             .map_err(|e| format!("egui painter: {e}"))?;
         let egui_state = egui_winit::State::new(
             egui::Context::default(),
             egui::ViewportId::ROOT,
             &window,
-            Some(window.scale_factor() as f32),
+            Some(scale),
             window.theme(),
             Some(painter.max_texture_side()),
         );
-        let (picked_tx, picked_rx) = channel();
         let mut ui = BrowserUi::new();
-        if start_url.is_none() {
+        if url.is_none() {
             // Новое окно с пустой вкладкой: курсор сразу в адресной строке, как в Firefox.
             ui.focus_url_bar();
         }
-        Ok(Self {
+        self.windows.push(BrowserWindow {
+            id,
+            private,
             egui_state,
             painter,
             ui,
             page_rect: [0.0; 4],
             ui_has_focus: false,
             page_blocked: false,
-            proxy,
-            picked_tx,
-            picked_rx,
-            content_prefs,
-            zoom_rx,
-            _profile: profile,
-            engine,
-            window,
-            browser,
-            browser_window,
-            shortcuts: default_shortcuts(),
             modifiers: ModifiersState::empty(),
             cursor: (0.0, 0.0),
-        })
+            title: String::new(),
+            window,
+        });
+        self.browser.open_window(&mut self.engine, id, private, url);
+        self.update_titles();
+        Ok(id)
+    }
+
+    /// Окно уже закрыто в ядре: убрать интерфейс, поверхность движка и окно ОС.
+    fn close_window(&mut self, event_loop: &ActiveEventLoop, id: WindowId) {
+        let Some(index) = self.windows.iter().position(|w| w.id == id) else {
+            return;
+        };
+        let mut win = self.windows.remove(index);
+        // Текстуры egui удаляются, пока GL-контекст окна ещё жив.
+        self.engine.make_current(id);
+        win.painter.destroy();
+        self.engine.remove_window(id);
+        drop(win);
+        // Как Firefox на Windows: с последним окном завершается и браузер.
+        if self.windows.is_empty() {
+            event_loop.exit();
+        }
+    }
+
+    fn win(&self, id: WindowId) -> Option<&BrowserWindow> {
+        self.windows.iter().find(|w| w.id == id)
+    }
+
+    fn win_mut(&mut self, id: WindowId) -> Option<&mut BrowserWindow> {
+        self.windows.iter_mut().find(|w| w.id == id)
+    }
+
+    fn request_redraw(&self, id: WindowId) {
+        if let Some(w) = self.win(id) {
+            w.window.request_redraw();
+        }
     }
 
     fn spin(&mut self, event_loop: &ActiveEventLoop) {
@@ -260,7 +342,7 @@ impl Running {
             };
             self.browser
                 .answer(&mut self.engine, picked.tab, picked.id, reply);
-            self.window.request_redraw();
+            self.redraw_tab(picked.tab);
         }
         while let Ok(values) = self.zoom_rx.try_recv() {
             let values = values.into_iter().map(|(site, zoom)| (site, zoom as f32));
@@ -274,19 +356,31 @@ impl Running {
             let effects = self.browser.handle_event(&mut self.engine, event);
             self.apply(event_loop, effects);
         }
-        self.update_title();
-        self.window.request_redraw();
+        self.update_titles();
+        for w in &self.windows {
+            w.window.request_redraw();
+        }
     }
 
-    /// Кадр: страница во внеэкранный буфер, затем интерфейс egui и страница в своей области.
-    fn redraw(&mut self, event_loop: &ActiveEventLoop) {
-        self.engine.begin_frame();
-        let ctx = self.egui_state.egui_ctx().clone();
-        let raw_input = self.egui_state.take_egui_input(&self.window);
+    fn redraw_tab(&self, tab: klin_shared::TabId) {
+        if let Some(t) = self.browser.tab(tab) {
+            self.request_redraw(t.window);
+        }
+    }
+
+    /// Кадр окна: страница во внеэкранный буфер, затем интерфейс egui и страница в своей области.
+    fn redraw(&mut self, event_loop: &ActiveEventLoop, id: WindowId) {
+        let Some(index) = self.windows.iter().position(|w| w.id == id) else {
+            return;
+        };
+        self.engine.begin_frame(id);
         let blitter: Option<Arc<klin_engine::PageBlitter>> =
-            self.engine.page_blitter().map(Arc::new);
+            self.engine.page_blitter(id).map(Arc::new);
+        let w = &mut self.windows[index];
+        let ctx = w.egui_state.egui_ctx().clone();
+        let raw_input = w.egui_state.take_egui_input(&w.window);
         let mut frame = None;
-        let (ui, browser, window_id) = (&mut self.ui, &self.browser, self.browser_window);
+        let (ui, browser) = (&mut w.ui, &self.browser);
         let full = ctx.run_ui(raw_input, |root| {
             let mut paint_page = |painter: &egui::Painter, rect: egui::Rect| {
                 let Some(blit) = blitter.clone() else { return };
@@ -302,102 +396,92 @@ impl Running {
                     callback: Arc::new(callback),
                 });
             };
-            frame = Some(ui.show(root, browser, window_id, &mut paint_page));
+            frame = Some(ui.show(root, browser, id, &mut paint_page));
         });
-        self.egui_state
-            .handle_platform_output(&self.window, full.platform_output);
+        w.egui_state
+            .handle_platform_output(&w.window, full.platform_output);
         let primitives = ctx.tessellate(full.shapes, full.pixels_per_point);
-        let size = self.window.inner_size();
+        let size = w.window.inner_size();
         let mut textures = full.textures_delta;
-        self.painter.paint_and_update_textures(
+        w.painter.paint_and_update_textures(
             [size.width, size.height],
             full.pixels_per_point,
             &primitives,
             &mut textures,
         );
-        self.engine.present();
+        self.engine.present(id);
 
-        if let Some(frame) = frame {
-            self.ui_has_focus = frame.ui_has_focus;
-            // Фокус у страницы не забираем: Servo закрывает свои элементы управления
-            // (например, список <select>) при потере фокуса. Ввод просто не передаётся.
-            self.page_blocked = frame.page_blocked;
-            let ppp = full.pixels_per_point;
-            let r = frame.page_rect;
-            self.page_rect = [
-                r.min.x * ppp,
-                r.min.y * ppp,
-                r.width() * ppp,
-                r.height() * ppp,
-            ];
-            self.engine.resize_page(
-                self.page_rect[2].round() as u32,
-                self.page_rect[3].round() as u32,
-            );
-            for action in frame.actions {
-                self.act(event_loop, action);
-            }
-        }
+        let w = &mut self.windows[index];
         let repaint_now = full
             .viewport_output
             .get(&egui::ViewportId::ROOT)
             .is_some_and(|v| v.repaint_delay.is_zero());
         if repaint_now {
-            self.window.request_redraw();
+            w.window.request_redraw();
+        }
+        if let Some(frame) = frame {
+            w.ui_has_focus = frame.ui_has_focus;
+            // Фокус у страницы не забираем: Servo закрывает свои элементы управления
+            // (например, список <select>) при потере фокуса. Ввод просто не передаётся.
+            w.page_blocked = frame.page_blocked;
+            let ppp = full.pixels_per_point;
+            let r = frame.page_rect;
+            w.page_rect = [
+                r.min.x * ppp,
+                r.min.y * ppp,
+                r.width() * ppp,
+                r.height() * ppp,
+            ];
+            let (pw, ph) = (w.page_rect[2].round() as u32, w.page_rect[3].round() as u32);
+            self.engine.resize_page(id, pw, ph);
+            for action in frame.actions {
+                self.act(event_loop, id, action);
+            }
         }
     }
 
-    fn act(&mut self, event_loop: &ActiveEventLoop, action: Action) {
+    fn act(&mut self, event_loop: &ActiveEventLoop, id: WindowId, action: Action) {
         match action {
-            Action::Execute(cmd) => self.execute(event_loop, cmd),
+            Action::Execute(cmd) => self.execute(event_loop, id, cmd),
             Action::SelectTab(tab) => self.browser.select_tab(&mut self.engine, tab),
             Action::CloseTab(tab) => {
                 let effects = self.browser.close_tab(&mut self.engine, tab);
                 self.apply(event_loop, effects);
             }
-            Action::Navigate(input) => {
-                self.browser
-                    .load_input(&mut self.engine, self.browser_window, &input)
-            }
-            Action::FocusPage => self.engine.set_page_focused(true),
-            Action::Answer { tab, id, reply } => {
-                self.browser.answer(&mut self.engine, tab, id, reply)
-            }
+            Action::Navigate(input) => self.browser.load_input(&mut self.engine, id, &input),
+            Action::FocusPage => self.engine.set_page_focused(id, true),
+            Action::Answer {
+                tab,
+                id: request,
+                reply,
+            } => self.browser.answer(&mut self.engine, tab, request, reply),
         }
-        self.update_title();
-        self.window.request_redraw();
+        self.update_titles();
+        self.request_redraw(id);
     }
 
-    fn execute(&mut self, event_loop: &ActiveEventLoop, cmd: Command) {
-        let effects = self
-            .browser
-            .execute(&mut self.engine, self.browser_window, cmd);
+    fn execute(&mut self, event_loop: &ActiveEventLoop, id: WindowId, cmd: Command) {
+        let effects = self.browser.execute(&mut self.engine, id, cmd);
         self.apply(event_loop, effects);
-        self.window.request_redraw();
-    }
-
-    /// Точка окна → точка страницы, если она внутри страницы.
-    fn page_point(&self, (x, y): (f32, f32)) -> Option<(f32, f32)> {
-        if self.page_blocked {
-            return None;
-        }
-        let [px, py, w, h] = self.page_rect;
-        let (lx, ly) = (x - px, y - py);
-        (lx >= 0.0 && ly >= 0.0 && lx < w && ly < h).then_some((lx, ly))
+        self.request_redraw(id);
     }
 
     fn apply(&mut self, event_loop: &ActiveEventLoop, effects: Vec<UiEffect>) {
         for effect in effects {
             match effect {
-                UiEffect::Redraw(_) => self.window.request_redraw(),
-                UiEffect::WindowClosed(id) if id == self.browser_window => event_loop.exit(),
-                UiEffect::WindowOpened(_) => {
-                    warn!("multiple windows are not supported in the prototype yet")
+                UiEffect::Redraw(tab) => self.redraw_tab(tab),
+                UiEffect::WindowClosed(id) => self.close_window(event_loop, id),
+                UiEffect::OpenWindow { private, url } => {
+                    if let Err(e) = self.open_window(event_loop, private, url) {
+                        log::error!("failed to open a window: {e}");
+                    }
                 }
-                UiEffect::FocusUrlBar(_) => {
-                    self.engine.set_page_focused(false);
-                    self.ui.focus_url_bar();
-                    self.window.request_redraw();
+                UiEffect::FocusUrlBar(id) => {
+                    self.engine.set_page_focused(id, false);
+                    if let Some(w) = self.win_mut(id) {
+                        w.ui.focus_url_bar();
+                        w.window.request_redraw();
+                    }
                 }
                 UiEffect::NativeRequest { tab, request } => {
                     if let klin_core::RequestKind::FilePicker { multiple, accept } =
@@ -423,58 +507,71 @@ impl Running {
                     self.content_prefs.set(&site, FULL_ZOOM, zoom);
                 }
                 UiEffect::NotImplemented(cmd) => info!("{cmd:?} is planned for a later version"),
-                UiEffect::WindowClosed(_) => {}
             }
         }
     }
 
-    fn update_title(&self) {
-        let title = self
-            .browser
-            .selected_tab(self.browser_window)
-            .map(|t| t.title.trim().to_owned())
-            .filter(|t| !t.is_empty());
-        // Как в Firefox: «Заголовок страницы — Имя браузера».
-        self.window.set_title(&match title {
-            Some(t) => format!("{t} — {APP_NAME}"),
-            None => APP_NAME.to_owned(),
-        });
+    fn update_titles(&mut self) {
+        let browser = &self.browser;
+        for w in &mut self.windows {
+            let page = browser
+                .selected_tab(w.id)
+                .map(|t| t.title.trim().to_owned())
+                .filter(|t| !t.is_empty());
+            // Как в Firefox: «Заголовок страницы — Имя браузера».
+            // TODO(0.2): подпись приватного окна — из строк Firefox (Fluent).
+            let app = if w.private {
+                format!("{APP_NAME} — приватный просмотр")
+            } else {
+                APP_NAME.to_owned()
+            };
+            let title = match page {
+                Some(t) => format!("{t} — {app}"),
+                None => app,
+            };
+            if title != w.title {
+                w.window.set_title(&title);
+                w.title = title;
+            }
+        }
     }
 
-    fn selected_tab(&self) -> Option<klin_shared::TabId> {
-        self.browser.window(self.browser_window)?.selected_tab()
-    }
-
-    fn send(&mut self, input: InputEvent) {
-        if let Some(tab) = self.selected_tab() {
+    fn send(&mut self, id: WindowId, input: InputEvent) {
+        if let Some(tab) = self.browser.window(id).and_then(|w| w.selected_tab()) {
             klin_core::Engine::send_input(&mut self.engine, tab, input);
         }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         if matches!(event, WindowEvent::RedrawRequested) {
-            self.redraw(event_loop);
+            self.redraw(event_loop, id);
             return;
         }
-        let egui_response = self.egui_state.on_window_event(&self.window, &event);
+        let Some(w) = self.win_mut(id) else { return };
+        let egui_response = w.egui_state.on_window_event(&w.window, &event);
         if egui_response.repaint {
-            self.window.request_redraw();
+            w.window.request_redraw();
         }
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                let effects = self.browser.close_window(&mut self.engine, id);
+                self.apply(event_loop, effects);
+            }
             WindowEvent::Resized(size) => {
-                self.engine.resize_window(size.width, size.height);
-                self.window.request_redraw();
+                self.engine.resize_window(id, size.width, size.height);
+                self.request_redraw(id);
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                self.engine.set_scale(scale_factor as f32)
+                self.engine.set_scale(id, scale_factor as f32)
             }
             WindowEvent::Focused(focused) => {
-                self.engine.set_page_focused(focused && !self.ui_has_focus)
+                let ui_has_focus = w.ui_has_focus;
+                self.engine.set_page_focused(id, focused && !ui_has_focus)
             }
-            WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
+            WindowEvent::ModifiersChanged(m) => w.modifiers = m.state(),
             WindowEvent::KeyboardInput { event, .. } => {
-                let modifiers = modifiers(self.modifiers);
+                let modifiers = modifiers(w.modifiers);
+                let ui_has_focus = w.ui_has_focus;
                 let pressed = event.state == ElementState::Pressed;
                 let key = key(&event.logical_key, event.physical_key, modifiers);
                 if pressed {
@@ -482,32 +579,35 @@ impl Running {
                         command::lookup(&self.shortcuts, KeyChord::new(modifiers, k))
                     });
                     // Esc в адресной строке отменяет правку, а не останавливает загрузку.
-                    let ui_owns = self.ui_has_focus && cmd == Some(Command::Stop);
+                    let ui_owns = ui_has_focus && cmd == Some(Command::Stop);
                     if let Some(cmd) = cmd.filter(|_| !ui_owns) {
-                        self.execute(event_loop, cmd);
+                        self.execute(event_loop, id, cmd);
                         return;
                     }
                 }
-                if self.ui_has_focus {
+                if ui_has_focus {
                     return; // клавиша уже у egui
                 }
                 let code = match event.physical_key {
                     PhysicalKey::Code(code) => Some(format!("{code:?}")),
                     PhysicalKey::Unidentified(_) => None,
                 };
-                self.send(InputEvent::Key {
-                    key: key.unwrap_or(Key::Named(NamedKey::Other)),
-                    text: event.text.map(|t| t.to_string()),
-                    code,
-                    modifiers,
-                    pressed,
-                    repeat: event.repeat,
-                });
+                self.send(
+                    id,
+                    InputEvent::Key {
+                        key: key.unwrap_or(Key::Named(NamedKey::Other)),
+                        text: event.text.map(|t| t.to_string()),
+                        code,
+                        modifiers,
+                        pressed,
+                        repeat: event.repeat,
+                    },
+                );
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor = (position.x as f32, position.y as f32);
-                if let Some((x, y)) = self.page_point(self.cursor) {
-                    self.send(InputEvent::MouseMove { x, y });
+                w.cursor = (position.x as f32, position.y as f32);
+                if let Some((x, y)) = w.page_point() {
+                    self.send(id, InputEvent::MouseMove { x, y });
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
@@ -527,16 +627,19 @@ impl Running {
                     } else {
                         Command::Forward
                     };
-                    self.execute(event_loop, cmd);
+                    self.execute(event_loop, id, cmd);
                     return;
                 }
-                if let Some((x, y)) = self.page_point(self.cursor) {
-                    self.send(InputEvent::MouseButton {
-                        button,
-                        x,
-                        y,
-                        pressed,
-                    });
+                if let Some((x, y)) = w.page_point() {
+                    self.send(
+                        id,
+                        InputEvent::MouseButton {
+                            button,
+                            x,
+                            y,
+                            pressed,
+                        },
+                    );
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -545,8 +648,8 @@ impl Running {
                     MouseScrollDelta::LineDelta(x, y) => (f64::from(x) * 76.0, f64::from(y) * 76.0),
                     MouseScrollDelta::PixelDelta(d) => (d.x, d.y),
                 };
-                if let Some((x, y)) = self.page_point(self.cursor) {
-                    self.send(InputEvent::Wheel { dx, dy, x, y });
+                if let Some((x, y)) = w.page_point() {
+                    self.send(id, InputEvent::Wheel { dx, dy, x, y });
                 }
             }
             _ => {}
@@ -556,8 +659,11 @@ impl Running {
 
 impl Drop for Running {
     fn drop(&mut self) {
-        // Текстуры egui удаляются, пока GL-контекст окна ещё жив.
-        self.painter.destroy();
+        // Текстуры egui удаляются, пока GL-контексты окон ещё живы.
+        for w in &mut self.windows {
+            self.engine.make_current(w.id);
+            w.painter.destroy();
+        }
     }
 }
 
