@@ -1,6 +1,6 @@
 [package]
 name = "klin-storage"
-description = "places, logins, sessionstore"
+description = "Хранилища профиля Klin: content-prefs, позже places, logins, sessionstore"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,8 @@ repository.workspace = true
 
 [dependencies]
 klin-shared.workspace = true
-klin-profile.workspace = true
+rusqlite.workspace = true
+log.workspace = true
 
 [lints]
 workspace = true

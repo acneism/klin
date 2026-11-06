@@ -4,7 +4,7 @@
 
 По [Servo Book для Windows](https://book.servo.org/building/windows.html):
 
-- rustup с хостом `x86_64-pc-windows-msvc` (32-битный хост по умолчанию — известная причина ошибок), Rust 1.88+;
+- rustup с хостом `x86_64-pc-windows-msvc` (32-битный хост по умолчанию — известная причина ошибок), Rust 1.89+;
 - Visual Studio 2022: MSVC v143 build tools (Latest), C++ ATL для v143, Windows SDK 10.0.19041+;
 - Clang 19+ (обязателен с Servo 0.6);
 - если сборка mozjs падает с ошибкой `GetShortPathName`, включите короткие имена 8.3.

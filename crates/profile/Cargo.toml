@@ -1,6 +1,6 @@
 [package]
 name = "klin-profile"
-description = "Папка профиля Klin: блокировка, миграции, ключи"
+description = "Папка профиля Klin: расположение, profiles.ini, блокировка"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,7 +8,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-klin-shared.workspace = true
+thiserror.workspace = true
+log.workspace = true
 
 [lints]
 workspace = true

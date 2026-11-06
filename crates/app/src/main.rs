@@ -14,8 +14,11 @@ use klin_core::input::{Key, Modifiers, MouseButton, NamedKey};
 use klin_core::{
     Browser, Command, InputEvent, KeyChord, browser::UiEffect, command, default_shortcuts,
 };
-use klin_engine::{ServoEngine, Waker};
+use klin_engine::{EngineConfig, ServoEngine, Waker};
+use klin_profile::{Profile, ProfileError};
 use klin_shared::{Url, WindowId};
+use klin_storage::ContentPrefs;
+use klin_storage::content_prefs::FULL_ZOOM;
 use klin_ui::{Action, BrowserUi};
 use log::{info, warn};
 use winit::application::ApplicationHandler;
@@ -36,21 +39,67 @@ fn main() -> Result<(), Box<dyn Error>> {
         .install_default()
         .map_err(|_| "failed to install rustls crypto provider")?;
 
-    let start_url = std::env::args().nth(1).and_then(|arg| {
+    let args = Args::parse(std::env::args().skip(1));
+    let profile = match Profile::open(args.profile) {
+        Ok(profile) => profile,
+        Err(ProfileError::Locked(dir)) => {
+            // Как в Firefox: профиль занят другим процессом.
+            eprintln!(
+                "{APP_NAME} уже запущен, но не отвечает. Чтобы открыть новое окно, \
+                 закройте старый процесс {APP_NAME}.\nПрофиль: {}",
+                dir.display()
+            );
+            std::process::exit(1);
+        }
+        Err(e) => return Err(e.into()),
+    };
+    let start_url = args.url.and_then(|arg| {
         klin_core::urifixup::to_url(&arg, &klin_core::urifixup::SearchEngine::default())
     });
 
     let event_loop = EventLoop::<Wake>::with_user_event().build()?;
     let proxy = event_loop.create_proxy();
-    let mut app = App::Starting { proxy, start_url };
+    let mut app = App::Starting {
+        proxy,
+        start_url,
+        profile: Some(profile),
+    };
     event_loop.run_app(&mut app)?;
     Ok(())
+}
+
+/// Аргументы командной строки — имена как у Firefox.
+#[derive(Debug, Default, PartialEq)]
+struct Args {
+    /// `-profile <путь>` / `--profile <путь>`
+    profile: Option<std::path::PathBuf>,
+    /// Первый аргумент без флага — адрес или поисковый запрос.
+    url: Option<String>,
+}
+
+impl Args {
+    fn parse(args: impl IntoIterator<Item = String>) -> Self {
+        let mut out = Args::default();
+        let mut args = args.into_iter();
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "-profile" | "--profile" => out.profile = args.next().map(Into::into),
+                flag if flag.starts_with('-') && flag.len() > 1 => {
+                    warn!("unknown argument {flag}");
+                }
+                _ if out.url.is_none() => out.url = Some(arg),
+                _ => {}
+            }
+        }
+        out
+    }
 }
 
 enum App {
     Starting {
         proxy: EventLoopProxy<Wake>,
         start_url: Option<Url>,
+        profile: Option<Profile>,
     },
     Running(Box<Running>),
     Failed,
@@ -67,6 +116,8 @@ struct Running {
     proxy: EventLoopProxy<Wake>,
     picked_tx: Sender<file_picker::Picked>,
     picked_rx: Receiver<file_picker::Picked>,
+    content_prefs: ContentPrefs,
+    zoom_rx: Receiver<Vec<(String, f64)>>,
     // Порядок важен: движок отпускается раньше окна.
     engine: ServoEngine,
     window: Window,
@@ -75,14 +126,24 @@ struct Running {
     shortcuts: Vec<(KeyChord, Command)>,
     modifiers: ModifiersState,
     cursor: (f32, f32),
+    /// Последним: блокировка профиля снимается, когда всё остальное уже закрыто.
+    _profile: Profile,
 }
 
 impl ApplicationHandler<Wake> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let App::Starting { proxy, start_url } = self else {
+        let App::Starting {
+            proxy,
+            start_url,
+            profile,
+        } = self
+        else {
             return;
         };
-        match Running::start(event_loop, proxy.clone(), start_url.take()) {
+        let Some(profile) = profile.take() else {
+            return;
+        };
+        match Running::start(event_loop, proxy.clone(), start_url.take(), profile) {
             Ok(running) => *self = App::Running(Box::new(running)),
             Err(error) => {
                 log::error!("failed to start: {error}");
@@ -116,6 +177,7 @@ impl Running {
         event_loop: &ActiveEventLoop,
         proxy: EventLoopProxy<Wake>,
         start_url: Option<Url>,
+        profile: Profile,
     ) -> Result<Self, Box<dyn Error>> {
         let window = event_loop.create_window(WindowAttributes::default().with_title(APP_NAME))?;
         let size = window.inner_size();
@@ -132,7 +194,22 @@ impl Running {
             (size.width, size.height),
             window.scale_factor() as f32,
             waker,
+            EngineConfig {
+                data_dir: Some(profile.dir.clone()),
+                http_cache: Some(profile.cache_dir.join("http-cache")),
+            },
         )?;
+
+        // Масштаб сайтов загружается в фоне и применяется, когда придёт.
+        let content_prefs = ContentPrefs::start(profile.path("content-prefs.sqlite"));
+        let (zoom_tx, zoom_rx) = channel();
+        {
+            let proxy = proxy.clone();
+            content_prefs.get_all(FULL_ZOOM, move |values| {
+                let _ = zoom_tx.send(values);
+                let _ = proxy.send_event(Wake);
+            });
+        }
         let mut browser = Browser::new();
         let browser_window = browser.open_window(&mut engine, false, start_url.clone());
 
@@ -162,6 +239,9 @@ impl Running {
             proxy,
             picked_tx,
             picked_rx,
+            content_prefs,
+            zoom_rx,
+            _profile: profile,
             engine,
             window,
             browser,
@@ -181,6 +261,10 @@ impl Running {
             self.browser
                 .answer(&mut self.engine, picked.tab, picked.id, reply);
             self.window.request_redraw();
+        }
+        while let Ok(values) = self.zoom_rx.try_recv() {
+            let values = values.into_iter().map(|(site, zoom)| (site, zoom as f32));
+            self.browser.load_site_zoom(&mut self.engine, values);
         }
         let events = self.engine.spin();
         if events.is_empty() {
@@ -331,6 +415,12 @@ impl Running {
                             },
                         );
                     }
+                }
+                UiEffect::SiteZoomChanged { site, zoom } => {
+                    // Шаги масштаба Firefox — с двумя знаками (1.1, 1.33); без округления
+                    // f32 → f64 дал бы 1.2000000476837158.
+                    let zoom = zoom.map(|z| (f64::from(z) * 100.0).round() / 100.0);
+                    self.content_prefs.set(&site, FULL_ZOOM, zoom);
                 }
                 UiEffect::NotImplemented(cmd) => info!("{cmd:?} is planned for a later version"),
                 UiEffect::WindowClosed(_) => {}
@@ -542,5 +632,31 @@ fn latin_from_code(code: KeyCode) -> Option<char> {
         KeyCode::Minus | KeyCode::NumpadSubtract => Some('-'),
         KeyCode::NumpadAdd => Some('+'),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Args {
+        Args::parse(args.iter().map(|s| s.to_string()))
+    }
+
+    #[test]
+    fn firefox_style_arguments() {
+        assert_eq!(
+            parse(&["-profile", "C:/p", "example.com"]),
+            Args {
+                profile: Some("C:/p".into()),
+                url: Some("example.com".into())
+            }
+        );
+        assert_eq!(parse(&["--profile", "x"]).profile, Some("x".into()));
+        assert_eq!(
+            parse(&["https://servo.org"]).url.as_deref(),
+            Some("https://servo.org")
+        );
+        assert_eq!(parse(&[]), Args::default());
     }
 }

@@ -3254,6 +3254,7 @@ dependencies = [
  "klin-engine",
  "klin-profile",
  "klin-shared",
+ "klin-storage",
  "klin-ui",
  "log",
  "rfd",
@@ -3334,7 +3335,8 @@ version = "0.0.1"
 name = "klin-profile"
 version = "0.0.1"
 dependencies = [
- "klin-shared",
+ "log",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -3356,8 +3358,9 @@ dependencies = [
 name = "klin-storage"
 version = "0.0.1"
 dependencies = [
- "klin-profile",
  "klin-shared",
+ "log",
+ "rusqlite",
 ]
 
 [[package]]

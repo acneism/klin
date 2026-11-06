@@ -51,6 +51,15 @@ impl EventLoopWaker for Waker {
     }
 }
 
+/// Где движок хранит данные профиля.
+#[derive(Clone, Debug, Default)]
+pub struct EngineConfig {
+    /// Папка профиля: cookies, localStorage, HSTS и другие данные Servo.
+    pub data_dir: Option<std::path::PathBuf>,
+    /// Файл дискового HTTP-кэша (в папке кэша профиля).
+    pub http_cache: Option<std::path::PathBuf>,
+}
+
 /// См. [`ServoEngine::page_blitter`].
 pub type PageBlitter = Box<dyn Fn(&glow::Context, [i32; 4]) + Send + Sync>;
 
@@ -92,6 +101,7 @@ impl ServoEngine {
         size: (u32, u32),
         scale: f32,
         waker: Waker,
+        config: EngineConfig,
     ) -> Result<Self, EngineError> {
         let window_context = Rc::new(
             WindowRenderingContext::new(display, window, dpi::PhysicalSize::new(size.0, size.1))
@@ -106,7 +116,17 @@ impl ServoEngine {
             .register(klin_internal_pages::SCHEME, protocol::InternalPages)
             .map_err(|e| EngineError(format!("register {}: {e:?}", klin_internal_pages::SCHEME)))?;
 
+        let opts = servo::Opts {
+            config_dir: config.data_dir,
+            ..Default::default()
+        };
+        let mut preferences = servo::Preferences::default();
+        if let Some(cache) = config.http_cache {
+            preferences.network_http_disk_cache = cache.to_string_lossy().into_owned();
+        }
         let servo = ServoBuilder::default()
+            .opts(opts)
+            .preferences(preferences)
             .event_loop_waker(Box::new(waker))
             .protocol_registry(protocols)
             .build();

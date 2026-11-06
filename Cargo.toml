@@ -23,7 +23,8 @@ default-members = [
 [workspace.package]
 version = "0.0.1"
 edition = "2024"
-rust-version = "1.88"
+# 1.89: File::try_lock (profile lock). servo 0.7.0 itself needs 1.88.
+rust-version = "1.89"
 license = "MPL-2.0"
 repository = "https://github.com/acneism/klin"
 authors = ["Klin contributors"]
@@ -33,6 +34,8 @@ authors = ["Klin contributors"]
 servo = { version = "=0.7.0", default-features = true }
 
 url = "2.5"
+# Same major as servo 0.7.0, so SQLite is compiled once.
+rusqlite = { version = "0.38", features = ["bundled"] }
 thiserror = "2"
 log = "0.4"
 winit = "0.30.13"

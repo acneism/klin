@@ -68,6 +68,11 @@ pub enum UiEffect {
         request: Box<PageRequest>,
     },
     Redraw(TabId),
+    /// Масштаб сайта изменился и должен быть сохранён (`None` — сброшен к 100 %).
+    SiteZoomChanged {
+        site: String,
+        zoom: Option<f32>,
+    },
     /// Команда ещё не реализована в этой версии.
     NotImplemented(Command),
 }
@@ -389,7 +394,7 @@ impl Browser {
             Back | Forward | Reload | ReloadSkipCache | Stop | Home | ZoomIn | ZoomOut
             | ZoomReset => {
                 if let Some(tab) = selected {
-                    self.tab_command(engine, tab, command);
+                    return self.tab_command(engine, tab, command);
                 }
             }
             NextTab | PreviousTab | SelectLastTab => {}
@@ -408,7 +413,12 @@ impl Browser {
         Vec::new()
     }
 
-    fn tab_command(&mut self, engine: &mut dyn Engine, tab: TabId, command: Command) {
+    fn tab_command(
+        &mut self,
+        engine: &mut dyn Engine,
+        tab: TabId,
+        command: Command,
+    ) -> Vec<UiEffect> {
         use Command::*;
         match command {
             Back => engine.go_back(tab),
@@ -423,7 +433,7 @@ impl Browser {
             }
             ZoomIn | ZoomOut | ZoomReset => {
                 let Some(t) = self.tabs.get_mut(&tab) else {
-                    return;
+                    return Vec::new();
                 };
                 let new = match command {
                     ZoomIn => zoom::enlarge(t.zoom),
@@ -431,14 +441,48 @@ impl Browser {
                     _ => 1.0,
                 };
                 t.zoom = new;
-                if prefs::ZOOM_SITE_SPECIFIC
-                    && let Some(h) = t.url.as_ref().and_then(host)
-                {
-                    self.site_zoom.set(h, new);
-                }
                 engine.set_zoom(tab, new);
+                let site = t.url.as_ref().and_then(host).map(str::to_owned);
+                let window = t.window;
+                let private = self.window(window).is_some_and(|w| w.private);
+                if let (true, Some(site)) = (prefs::ZOOM_SITE_SPECIFIC, site) {
+                    // Как в Firefox: масштаб сайта меняется во всех его вкладках.
+                    for other in self.tabs.values_mut() {
+                        if other.id != tab
+                            && other.url.as_ref().and_then(host) == Some(site.as_str())
+                        {
+                            other.zoom = new;
+                            engine.set_zoom(other.id, new);
+                        }
+                    }
+                    self.site_zoom.set(&site, new);
+                    // Масштаб из приватного окна на диск не пишется.
+                    if !private {
+                        let zoom = (new != 1.0).then_some(new);
+                        return vec![UiEffect::SiteZoomChanged { site, zoom }];
+                    }
+                }
             }
             _ => {}
+        }
+        Vec::new()
+    }
+
+    /// Загрузить сохранённый масштаб сайтов (из content-prefs) и применить к открытым вкладкам,
+    /// где масштаб ещё не меняли.
+    pub fn load_site_zoom(
+        &mut self,
+        engine: &mut dyn Engine,
+        values: impl IntoIterator<Item = (String, f32)>,
+    ) {
+        for (site, zoom) in values {
+            self.site_zoom.set(&site, zoom);
+            for tab in self.tabs.values_mut() {
+                if tab.zoom == 1.0 && tab.url.as_ref().and_then(host) == Some(site.as_str()) {
+                    tab.zoom = zoom;
+                    engine.set_zoom(tab.id, zoom);
+                }
+            }
         }
     }
 
@@ -722,6 +766,16 @@ mod tests {
             .unwrap();
         assert_eq!(b.tab(second).unwrap().zoom, 1.2);
         assert!(e.calls.contains(&Call::SetZoom(second, 1.2)));
+        // Изменение сохраняется и применяется ко всем вкладкам сайта.
+        let effects = b.execute(&mut e, w, Command::ZoomOut);
+        assert_eq!(
+            effects,
+            [UiEffect::SiteZoomChanged {
+                site: "a.example".into(),
+                zoom: Some(1.1)
+            }]
+        );
+        assert_eq!(b.tab(first).unwrap().zoom, 1.1);
         // Переход на другой сайт сбрасывает масштаб.
         b.handle_event(
             &mut e,
@@ -731,6 +785,23 @@ mod tests {
             },
         );
         assert_eq!(b.tab(second).unwrap().zoom, 1.0);
+    }
+
+    #[test]
+    fn saved_zoom_applies_to_open_tabs() {
+        let (mut b, mut e, w) = setup();
+        let tab = b.window(w).unwrap().tabs[0];
+        b.load_site_zoom(&mut e, [("a.example".to_owned(), 1.5)]);
+        assert_eq!(b.tab(tab).unwrap().zoom, 1.5);
+        assert!(e.calls.contains(&Call::SetZoom(tab, 1.5)));
+    }
+
+    #[test]
+    fn private_window_zoom_is_not_saved() {
+        let mut b = Browser::new();
+        let mut e = FakeEngine::default();
+        let w = b.open_window(&mut e, true, Some(url("https://p.example/")));
+        assert!(b.execute(&mut e, w, Command::ZoomIn).is_empty());
     }
 
     #[test]
