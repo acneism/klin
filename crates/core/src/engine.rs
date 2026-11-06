@@ -64,6 +64,11 @@ pub enum EngineEvent {
         id: RequestId,
         kind: RequestKind,
     },
+    /// Движок сам снял запрос (например, `<select>` убран со страницы).
+    RequestCancelled {
+        tab: TabId,
+        id: RequestId,
+    },
     NewFrame {
         tab: TabId,
     },
@@ -89,9 +94,9 @@ pub enum RequestKind {
         message: String,
         default: String,
     },
-    /// Разрешение (камера, геолокация, уведомления…), имя — как в Permissions API.
+    /// Разрешение (камера, геолокация, уведомления…).
     Permission {
-        name: String,
+        feature: PermissionFeature,
     },
     Authentication {
         url: Url,
@@ -99,16 +104,73 @@ pub enum RequestKind {
     },
     FilePicker {
         multiple: bool,
+        /// Фильтры из атрибута `accept`: расширения (`.png`) или MIME-типы.
         accept: Vec<String>,
     },
-    ContextMenu,
-    Unload,
+    /// Контекстное меню страницы. Координаты — в пикселях устройства относительно страницы.
+    ContextMenu {
+        x: i32,
+        y: i32,
+        items: Vec<MenuItem>,
+        link: Option<Url>,
+        image: Option<Url>,
+    },
+    /// Выпадающий список `<select>`. `rect` — элемент на странице: x, y, ширина, высота
+    /// в пикселях устройства.
+    Select {
+        rect: [i32; 4],
+        options: Vec<SelectOption>,
+        multiple: bool,
+        selected: Vec<usize>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PermissionFeature {
+    Geolocation,
+    Notifications,
+    Camera,
+    Microphone,
+    PersistentStorage,
+    Other,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuItem {
+    Action { action: MenuAction, enabled: bool },
+    Separator,
+}
+
+/// Пункты контекстного меню, которые умеет выполнять движок.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuAction {
+    Back,
+    Forward,
+    Reload,
+    CopyLink,
+    OpenLinkInNewTab,
+    CopyImageLink,
+    OpenImageInNewTab,
+    Cut,
+    Copy,
+    Paste,
+    SelectAll,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SelectOption {
+    /// Идентификатор, который возвращается в [`Reply::Select`].
+    pub id: usize,
+    pub label: String,
+    pub disabled: bool,
+    /// Метка `<optgroup>`, если пункт в группе.
+    pub group: Option<String>,
 }
 
 /// Ответ интерфейса на [`RequestKind`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum Reply {
-    /// Закрыть alert, «Отмена» в confirm/prompt, отказ в разрешении.
+    /// Закрыть alert, «Отмена» в confirm/prompt, отказ в разрешении, закрытое меню.
     Dismiss,
     Ok,
     Text(String),
@@ -119,5 +181,13 @@ pub enum Reply {
         password: String,
     },
     Files(Vec<std::path::PathBuf>),
-    ContextMenuItem(usize),
+    Menu(MenuAction),
+    Select(Vec<usize>),
+}
+
+/// Запрос страницы, ждущий ответа.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PageRequest {
+    pub id: RequestId,
+    pub kind: RequestKind,
 }

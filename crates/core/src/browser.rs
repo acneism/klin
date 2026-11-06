@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use klin_shared::{Disposition, Image, LoadStatus, TabId, Url, WindowId};
 
 use crate::command::Command;
-use crate::engine::{Engine, EngineEvent, RequestKind};
+use crate::engine::{Engine, EngineEvent, PageRequest, Reply};
 use crate::prefs;
 use crate::urifixup::{self, SearchEngine};
 use crate::zoom::{self, SiteZoom};
@@ -27,6 +27,9 @@ pub struct Tab {
     pub opener: Option<TabId>,
     /// Причина сбоя: вкладка показывает страницу сбоя с кнопкой «Перезагрузить».
     pub crashed: Option<String>,
+    /// Запросы страницы в порядке поступления (диалоги, разрешения, меню).
+    /// Как в Firefox, диалог привязан к вкладке: при переключении вкладок он не теряется.
+    pub requests: Vec<PageRequest>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -59,10 +62,10 @@ pub enum UiEffect {
     WindowOpened(WindowId),
     WindowClosed(WindowId),
     FocusUrlBar(WindowId),
-    ShowRequest {
+    /// У вкладки появился запрос, который интерфейс не рисует сам (выбор файла).
+    NativeRequest {
         tab: TabId,
-        id: klin_shared::RequestId,
-        kind: RequestKind,
+        request: Box<PageRequest>,
     },
     Redraw(TabId),
     /// Команда ещё не реализована в этой версии.
@@ -174,6 +177,7 @@ impl Browser {
                 zoom,
                 opener,
                 crashed: None,
+                requests: Vec::new(),
             },
         );
         let tabs = &self.tabs;
@@ -244,6 +248,9 @@ impl Browser {
         let Some(closed) = self.tabs.remove(&tab) else {
             return Vec::new();
         };
+        for request in &closed.requests {
+            engine.answer(request.id, Reply::Dismiss);
+        }
         engine.close_tab(tab);
         let Some(win) = self.windows.iter_mut().find(|w| w.id == closed.window) else {
             return Vec::new();
@@ -310,6 +317,24 @@ impl Browser {
         win.tabs.insert(target, t);
         win.selected = target;
         Some(tab)
+    }
+
+    /// Ответить на запрос страницы.
+    pub fn answer(
+        &mut self,
+        engine: &mut dyn Engine,
+        tab: TabId,
+        id: klin_shared::RequestId,
+        reply: Reply,
+    ) {
+        let Some(t) = self.tabs.get_mut(&tab) else {
+            return;
+        };
+        let before = t.requests.len();
+        t.requests.retain(|r| r.id != id);
+        if t.requests.len() != before {
+            engine.answer(id, reply);
+        }
     }
 
     /// Ввод адресной строки: адрес или поиск.
@@ -494,7 +519,28 @@ impl Browser {
                 }
             }
             EngineEvent::Request { tab, id, kind } => {
-                return vec![UiEffect::ShowRequest { tab, id, kind }];
+                let Some(t) = self.tabs.get_mut(&tab) else {
+                    engine.answer(id, Reply::Dismiss);
+                    return Vec::new();
+                };
+                let request = PageRequest { id, kind };
+                if matches!(request.kind, crate::RequestKind::FilePicker { .. }) {
+                    // Системный диалог выбора файла рисует app; запрос держим во вкладке,
+                    // чтобы страница была заблокирована, пока диалог открыт.
+                    t.requests.push(request.clone());
+                    return vec![UiEffect::NativeRequest {
+                        tab,
+                        request: Box::new(request),
+                    }];
+                }
+                t.requests.push(request);
+                return vec![UiEffect::Redraw(tab)];
+            }
+            EngineEvent::RequestCancelled { tab, id } => {
+                if let Some(t) = self.tabs.get_mut(&tab) {
+                    t.requests.retain(|r| r.id != id);
+                }
+                return vec![UiEffect::Redraw(tab)];
             }
             EngineEvent::NewFrame { tab } => return vec![UiEffect::Redraw(tab)],
             EngineEvent::Closed { tab } => {
@@ -725,6 +771,39 @@ mod tests {
                 Call::Stop(tab)
             ]
         );
+    }
+
+    #[test]
+    fn requests_belong_to_their_tab() {
+        let (mut b, mut e, w) = setup();
+        let tab = b.window(w).unwrap().tabs[0];
+        let id = klin_shared::RequestId::next();
+        let kind = crate::RequestKind::Alert {
+            message: "hi".into(),
+        };
+        b.handle_event(&mut e, EngineEvent::Request { tab, id, kind });
+        assert_eq!(b.tab(tab).unwrap().requests.len(), 1);
+        b.answer(&mut e, tab, id, Reply::Ok);
+        assert!(b.tab(tab).unwrap().requests.is_empty());
+        assert_eq!(e.calls.last(), Some(&Call::Answer(id, Reply::Ok)));
+        // Повторный ответ движку не уходит.
+        let calls = e.calls.len();
+        b.answer(&mut e, tab, id, Reply::Ok);
+        assert_eq!(e.calls.len(), calls);
+    }
+
+    #[test]
+    fn closing_tab_dismisses_its_requests() {
+        let (mut b, mut e, w) = setup();
+        b.execute(&mut e, w, Command::NewTab);
+        let tab = b.window(w).unwrap().tabs[1];
+        let id = klin_shared::RequestId::next();
+        let kind = crate::RequestKind::Confirm {
+            message: "?".into(),
+        };
+        b.handle_event(&mut e, EngineEvent::Request { tab, id, kind });
+        b.close_tab(&mut e, tab);
+        assert!(e.calls.contains(&Call::Answer(id, Reply::Dismiss)));
     }
 
     #[test]

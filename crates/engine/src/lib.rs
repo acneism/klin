@@ -18,7 +18,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use euclid::Scale;
-use klin_core::{Engine, EngineEvent, InputEvent, Reply};
+use klin_core::{Engine, EngineEvent, InputEvent, MenuAction, Reply};
 use klin_shared::{RequestId, TabId, Url, WindowId};
 use log::warn;
 use raw_window_handle::{DisplayHandle, WindowHandle};
@@ -117,6 +117,8 @@ impl ServoEngine {
             tabs: RefCell::new(HashMap::new()),
             webviews: RefCell::new(HashMap::new()),
             pending: RefCell::new(HashMap::new()),
+            controls: RefCell::new(Vec::new()),
+            background_opener: RefCell::new(None),
             visible: RefCell::new(None),
         });
         let page_context = Rc::new(window_context.offscreen_context(non_zero(size.0, size.1)));
@@ -297,10 +299,16 @@ impl Engine for ServoEngine {
     }
 
     fn answer(&mut self, request: RequestId, reply: Reply) {
-        let Some(pending) = self.shared.pending.borrow_mut().remove(&request) else {
-            return;
-        };
-        pending.answer(reply);
+        if let Some((tab, pending)) = self.shared.take(request) {
+            log::debug!("answer {request}: {reply:?}");
+            if matches!(
+                reply,
+                Reply::Menu(MenuAction::OpenLinkInNewTab | MenuAction::OpenImageInNewTab)
+            ) {
+                *self.shared.background_opener.borrow_mut() = Some(tab);
+            }
+            pending.answer(reply);
+        }
     }
 }
 
@@ -312,7 +320,7 @@ impl Drop for ServoEngine {
             .pending
             .borrow_mut()
             .drain()
-            .map(|(_, p)| p)
+            .map(|(_, (_, p))| p)
             .collect();
         for p in pending {
             p.answer(Reply::Dismiss);

@@ -22,6 +22,10 @@ egui.workspace = true
 egui-winit.workspace = true
 egui_glow.workspace = true
 
+# Системный диалог выбора файла (IFileOpenDialog), как в Firefox для Windows.
+[target.'cfg(windows)'.dependencies]
+rfd = { version = "0.17", default-features = false }
+
 [lints]
 workspace = true
 

@@ -5,11 +5,15 @@ use std::collections::{HashMap, VecDeque};
 use std::rc::{Rc, Weak};
 
 use euclid::Scale;
-use klin_core::{EngineEvent, Reply, RequestKind};
+use klin_core::{
+    EngineEvent, MenuAction, MenuItem, PermissionFeature, Reply, RequestKind, SelectOption,
+};
 use klin_shared::{Disposition, LoadStatus, RequestId, TabId, Url};
 use servo::{
-    AuthenticationRequest, ContextMenu, CreateNewWebViewRequest, EmbedderControl, FilePicker,
-    PermissionRequest, RenderingContext, SimpleDialog, WebView, WebViewDelegate, WebViewId,
+    AuthenticationRequest, ContextMenu, ContextMenuAction, ContextMenuItem,
+    CreateNewWebViewRequest, DeviceIntRect, EmbedderControl, EmbedderControlId, FilePicker,
+    PermissionRequest, RenderingContext, SelectElement, SelectElementOptionOrOptgroup,
+    SimpleDialog, WebView, WebViewDelegate, WebViewId,
 };
 
 use crate::protocol;
@@ -19,8 +23,13 @@ pub(crate) struct Shared {
     pub events: RefCell<VecDeque<EngineEvent>>,
     pub tabs: RefCell<HashMap<WebViewId, TabId>>,
     pub webviews: RefCell<HashMap<TabId, WebView>>,
-    pub pending: RefCell<HashMap<RequestId, Pending>>,
+    pub pending: RefCell<HashMap<RequestId, (TabId, Pending)>>,
+    /// Элементы управления, которые Servo может снять сам (`hide_embedder_control`).
+    pub controls: RefCell<Vec<(EmbedderControlId, TabId, RequestId)>>,
     pub visible: RefCell<Option<TabId>>,
+    /// Вкладка, из которой выбрали «Открыть ссылку в новой вкладке»: следующая вкладка
+    /// от неё открывается в фоне (`browser.tabs.loadInBackground`).
+    pub background_opener: RefCell<Option<TabId>>,
 }
 
 impl Shared {
@@ -38,6 +47,15 @@ impl Shared {
         if *self.visible.borrow() == Some(tab) {
             *self.visible.borrow_mut() = None;
         }
+        // Отпущенные запросы Servo закрывает сам со значением по умолчанию.
+        self.pending.borrow_mut().retain(|_, (t, _)| *t != tab);
+        self.controls.borrow_mut().retain(|(_, t, _)| *t != tab);
+    }
+
+    /// Снять запрос с учёта, когда на него ответили.
+    pub fn take(&self, id: RequestId) -> Option<(TabId, Pending)> {
+        self.controls.borrow_mut().retain(|(_, _, r)| *r != id);
+        self.pending.borrow_mut().remove(&id)
     }
 
     fn tab(&self, webview: &WebView) -> Option<TabId> {
@@ -48,10 +66,16 @@ impl Shared {
         self.events.borrow_mut().push_back(event);
     }
 
-    fn request(&self, tab: TabId, kind: RequestKind, pending: Pending) {
+    fn request(&self, tab: TabId, kind: RequestKind, pending: Pending) -> RequestId {
         let id = RequestId::next();
-        self.pending.borrow_mut().insert(id, pending);
+        self.pending.borrow_mut().insert(id, (tab, pending));
         self.push(EngineEvent::Request { tab, id, kind });
+        id
+    }
+
+    fn control(&self, tab: TabId, control: EmbedderControlId, kind: RequestKind, pending: Pending) {
+        let id = self.request(tab, kind, pending);
+        self.controls.borrow_mut().push((control, tab, id));
     }
 }
 
@@ -63,6 +87,7 @@ pub(crate) enum Pending {
     Authentication(AuthenticationRequest),
     FilePicker(FilePicker),
     ContextMenu(ContextMenu),
+    Select(SelectElement),
 }
 
 impl Pending {
@@ -85,31 +110,83 @@ impl Pending {
                 f.submit();
             }
             (Pending::FilePicker(f), _) => f.dismiss(),
-            (Pending::ContextMenu(menu), Reply::ContextMenuItem(index)) => {
-                let action = menu
-                    .items()
-                    .iter()
-                    .filter_map(context_menu_action)
-                    .nth(index);
-                match action {
-                    Some(action) => menu.select(action),
-                    None => menu.dismiss(),
-                }
+            (Pending::ContextMenu(menu), Reply::Menu(action)) => {
+                menu.select(to_servo_action(action))
             }
             (Pending::ContextMenu(menu), _) => menu.dismiss(),
+            (Pending::Select(mut select), Reply::Select(ids)) => {
+                select.select(ids);
+                select.submit();
+            }
+            // Закрытый без выбора список оставляет прежнее значение.
+            (Pending::Select(select), _) => select.submit(),
         }
     }
 }
 
-fn context_menu_action(item: &servo::ContextMenuItem) -> Option<servo::ContextMenuAction> {
-    match item {
-        servo::ContextMenuItem::Item {
-            action,
-            enabled: true,
-            ..
-        } => Some(*action),
-        _ => None,
+fn menu_action(action: ContextMenuAction) -> MenuAction {
+    match action {
+        ContextMenuAction::GoBack => MenuAction::Back,
+        ContextMenuAction::GoForward => MenuAction::Forward,
+        ContextMenuAction::Reload => MenuAction::Reload,
+        ContextMenuAction::CopyLink => MenuAction::CopyLink,
+        ContextMenuAction::OpenLinkInNewWebView => MenuAction::OpenLinkInNewTab,
+        ContextMenuAction::CopyImageLink => MenuAction::CopyImageLink,
+        ContextMenuAction::OpenImageInNewView => MenuAction::OpenImageInNewTab,
+        ContextMenuAction::Cut => MenuAction::Cut,
+        ContextMenuAction::Copy => MenuAction::Copy,
+        ContextMenuAction::Paste => MenuAction::Paste,
+        ContextMenuAction::SelectAll => MenuAction::SelectAll,
     }
+}
+
+fn to_servo_action(action: MenuAction) -> ContextMenuAction {
+    match action {
+        MenuAction::Back => ContextMenuAction::GoBack,
+        MenuAction::Forward => ContextMenuAction::GoForward,
+        MenuAction::Reload => ContextMenuAction::Reload,
+        MenuAction::CopyLink => ContextMenuAction::CopyLink,
+        MenuAction::OpenLinkInNewTab => ContextMenuAction::OpenLinkInNewWebView,
+        MenuAction::CopyImageLink => ContextMenuAction::CopyImageLink,
+        MenuAction::OpenImageInNewTab => ContextMenuAction::OpenImageInNewView,
+        MenuAction::Cut => ContextMenuAction::Cut,
+        MenuAction::Copy => ContextMenuAction::Copy,
+        MenuAction::Paste => ContextMenuAction::Paste,
+        MenuAction::SelectAll => ContextMenuAction::SelectAll,
+    }
+}
+
+fn control_kind(control: &EmbedderControl) -> &'static str {
+    match control {
+        EmbedderControl::SelectElement(_) => "select",
+        EmbedderControl::ColorPicker(_) => "color picker",
+        EmbedderControl::FilePicker(_) => "file picker",
+        EmbedderControl::InputMethod(_) => "input method",
+        EmbedderControl::SimpleDialog(_) => "dialog",
+        EmbedderControl::ContextMenu(_) => "context menu",
+    }
+}
+
+fn rect(r: DeviceIntRect) -> [i32; 4] {
+    [r.min.x, r.min.y, r.width(), r.height()]
+}
+
+fn select_options(options: &[SelectElementOptionOrOptgroup]) -> Vec<SelectOption> {
+    let option = |o: &servo::SelectElementOption, group: Option<&String>| SelectOption {
+        id: o.id,
+        label: o.label.clone(),
+        disabled: o.is_disabled,
+        group: group.filter(|g| !g.is_empty()).cloned(),
+    };
+    options
+        .iter()
+        .flat_map(|entry| match entry {
+            SelectElementOptionOrOptgroup::Option(o) => vec![option(o, None)],
+            SelectElementOptionOrOptgroup::Optgroup { label, options } => {
+                options.iter().map(|o| option(o, Some(label))).collect()
+            }
+        })
+        .collect()
 }
 
 pub(crate) struct Delegate {
@@ -219,10 +296,21 @@ impl WebViewDelegate for Delegate {
             .url()
             .unwrap_or_else(|| Url::parse("about:blank").expect("valid"));
         let created = self.shared.register(webview);
+        let background = self
+            .shared
+            .background_opener
+            .borrow_mut()
+            .take_if(|t| *t == opener)
+            .is_some();
+        let disposition = if background {
+            Disposition::BackgroundTab
+        } else {
+            Disposition::ForegroundTab
+        };
         self.shared.push(EngineEvent::OpenTabRequested {
             opener,
             url: protocol::display_url(url),
-            disposition: Disposition::ForegroundTab,
+            disposition,
             created: Some(created),
         });
     }
@@ -231,10 +319,19 @@ impl WebViewDelegate for Delegate {
         let Some(tab) = self.shared.tab(&webview) else {
             return;
         };
-        let name = format!("{:?}", request.feature()).to_lowercase();
+        let feature = match request.feature() {
+            servo::PermissionFeature::Geolocation => PermissionFeature::Geolocation,
+            servo::PermissionFeature::Notifications | servo::PermissionFeature::Push => {
+                PermissionFeature::Notifications
+            }
+            servo::PermissionFeature::Camera => PermissionFeature::Camera,
+            servo::PermissionFeature::Microphone => PermissionFeature::Microphone,
+            servo::PermissionFeature::PersistentStorage => PermissionFeature::PersistentStorage,
+            _ => PermissionFeature::Other,
+        };
         self.shared.request(
             tab,
-            RequestKind::Permission { name },
+            RequestKind::Permission { feature },
             Pending::Permission(request),
         );
     }
@@ -255,6 +352,8 @@ impl WebViewDelegate for Delegate {
         let Some(tab) = self.shared.tab(&webview) else {
             return;
         };
+        let control_id = control.id();
+        log::debug!("show_embedder_control: {}", control_kind(&control));
         match control {
             EmbedderControl::SimpleDialog(dialog) => {
                 let message = dialog.message().to_owned();
@@ -266,7 +365,8 @@ impl WebViewDelegate for Delegate {
                         default: p.current_value().to_owned(),
                     },
                 };
-                self.shared.request(tab, kind, Pending::Dialog(dialog));
+                self.shared
+                    .control(tab, control_id, kind, Pending::Dialog(dialog));
             }
             EmbedderControl::FilePicker(picker) => {
                 let kind = RequestKind::FilePicker {
@@ -274,17 +374,65 @@ impl WebViewDelegate for Delegate {
                     accept: picker
                         .filter_patterns()
                         .iter()
-                        .map(|p| format!("{p:?}"))
+                        .map(|p| p.0.clone())
                         .collect(),
                 };
-                self.shared.request(tab, kind, Pending::FilePicker(picker));
+                self.shared
+                    .control(tab, control_id, kind, Pending::FilePicker(picker));
             }
             EmbedderControl::ContextMenu(menu) => {
+                let items = menu
+                    .items()
+                    .iter()
+                    .map(|item| match item {
+                        ContextMenuItem::Item {
+                            action, enabled, ..
+                        } => MenuItem::Action {
+                            action: menu_action(*action),
+                            enabled: *enabled,
+                        },
+                        ContextMenuItem::Separator => MenuItem::Separator,
+                    })
+                    .collect();
+                let info = menu.element_info();
+                let [x, y, _, _] = rect(menu.position());
+                let kind = RequestKind::ContextMenu {
+                    x,
+                    y,
+                    items,
+                    link: info.link_url.clone(),
+                    image: info.image_url.clone(),
+                };
                 self.shared
-                    .request(tab, RequestKind::ContextMenu, Pending::ContextMenu(menu));
+                    .control(tab, control_id, kind, Pending::ContextMenu(menu));
             }
-            // Выпадающие списки, выбор цвета и IME — этап 0.1, вместе с интерфейсом egui.
+            EmbedderControl::SelectElement(select) => {
+                let kind = RequestKind::Select {
+                    rect: rect(select.position()),
+                    options: select_options(select.options()),
+                    multiple: select.allow_select_multiple(),
+                    selected: select.selected_options(),
+                };
+                self.shared
+                    .control(tab, control_id, kind, Pending::Select(select));
+            }
+            // Выбор цвета и IME — позже; отпущенный запрос Servo закрывает сам.
             _ => {}
+        }
+    }
+
+    fn hide_embedder_control(&self, _webview: WebView, control_id: EmbedderControlId) {
+        let found = {
+            let controls = self.shared.controls.borrow();
+            controls
+                .iter()
+                .find(|(c, _, _)| *c == control_id)
+                .map(|(_, t, r)| (*t, *r))
+        };
+        log::debug!("hide_embedder_control: known = {}", found.is_some());
+        if let Some((tab, id)) = found {
+            self.shared.take(id);
+            self.shared.push(EngineEvent::RequestCancelled { tab, id });
         }
     }
 }

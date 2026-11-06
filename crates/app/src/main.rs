@@ -4,8 +4,11 @@
 //! Горячие клавиши Firefox работают через команды ядра. Адрес можно передать аргументом:
 //! `klin https://servo.org`.
 
+mod file_picker;
+
 use std::error::Error;
 use std::sync::Arc;
+use std::sync::mpsc::{Receiver, Sender, channel};
 
 use klin_core::input::{Key, Modifiers, MouseButton, NamedKey};
 use klin_core::{
@@ -60,6 +63,10 @@ struct Running {
     /// Область страницы в физических пикселях окна: x, y, ширина, высота.
     page_rect: [f32; 4],
     ui_has_focus: bool,
+    page_blocked: bool,
+    proxy: EventLoopProxy<Wake>,
+    picked_tx: Sender<file_picker::Picked>,
+    picked_rx: Receiver<file_picker::Picked>,
     // Порядок важен: движок отпускается раньше окна.
     engine: ServoEngine,
     window: Window,
@@ -112,10 +119,13 @@ impl Running {
     ) -> Result<Self, Box<dyn Error>> {
         let window = event_loop.create_window(WindowAttributes::default().with_title(APP_NAME))?;
         let size = window.inner_size();
-        let waker = Waker::new(move || {
-            // Ошибка означает, что цикл событий уже завершён.
-            let _ = proxy.send_event(Wake);
-        });
+        let waker = {
+            let proxy = proxy.clone();
+            Waker::new(move || {
+                // Ошибка означает, что цикл событий уже завершён.
+                let _ = proxy.send_event(Wake);
+            })
+        };
         let mut engine = ServoEngine::new(
             event_loop.display_handle()?,
             window.window_handle()?,
@@ -136,6 +146,7 @@ impl Running {
             window.theme(),
             Some(painter.max_texture_side()),
         );
+        let (picked_tx, picked_rx) = channel();
         let mut ui = BrowserUi::new();
         if start_url.is_none() {
             // Новое окно с пустой вкладкой: курсор сразу в адресной строке, как в Firefox.
@@ -147,6 +158,10 @@ impl Running {
             ui,
             page_rect: [0.0; 4],
             ui_has_focus: false,
+            page_blocked: false,
+            proxy,
+            picked_tx,
+            picked_rx,
             engine,
             window,
             browser,
@@ -158,6 +173,15 @@ impl Running {
     }
 
     fn spin(&mut self, event_loop: &ActiveEventLoop) {
+        while let Ok(picked) = self.picked_rx.try_recv() {
+            let reply = match picked.files {
+                Some(files) => klin_core::Reply::Files(files),
+                None => klin_core::Reply::Dismiss,
+            };
+            self.browser
+                .answer(&mut self.engine, picked.tab, picked.id, reply);
+            self.window.request_redraw();
+        }
         let events = self.engine.spin();
         if events.is_empty() {
             return;
@@ -211,6 +235,9 @@ impl Running {
 
         if let Some(frame) = frame {
             self.ui_has_focus = frame.ui_has_focus;
+            // Фокус у страницы не забираем: Servo закрывает свои элементы управления
+            // (например, список <select>) при потере фокуса. Ввод просто не передаётся.
+            self.page_blocked = frame.page_blocked;
             let ppp = full.pixels_per_point;
             let r = frame.page_rect;
             self.page_rect = [
@@ -249,6 +276,9 @@ impl Running {
                     .load_input(&mut self.engine, self.browser_window, &input)
             }
             Action::FocusPage => self.engine.set_page_focused(true),
+            Action::Answer { tab, id, reply } => {
+                self.browser.answer(&mut self.engine, tab, id, reply)
+            }
         }
         self.update_title();
         self.window.request_redraw();
@@ -264,6 +294,9 @@ impl Running {
 
     /// Точка окна → точка страницы, если она внутри страницы.
     fn page_point(&self, (x, y): (f32, f32)) -> Option<(f32, f32)> {
+        if self.page_blocked {
+            return None;
+        }
         let [px, py, w, h] = self.page_rect;
         let (lx, ly) = (x - px, y - py);
         (lx >= 0.0 && ly >= 0.0 && lx < w && ly < h).then_some((lx, ly))
@@ -282,10 +315,22 @@ impl Running {
                     self.ui.focus_url_bar();
                     self.window.request_redraw();
                 }
-                UiEffect::ShowRequest { id, kind, .. } => {
-                    // До интерфейса диалогов отвечаем отказом, как при закрытии диалога.
-                    info!("page request {kind:?} dismissed: no dialog UI yet");
-                    klin_core::Engine::answer(&mut self.engine, id, klin_core::Reply::Dismiss);
+                UiEffect::NativeRequest { tab, request } => {
+                    if let klin_core::RequestKind::FilePicker { multiple, accept } =
+                        request.kind.clone()
+                    {
+                        let proxy = self.proxy.clone();
+                        file_picker::open(
+                            tab,
+                            request.id,
+                            multiple,
+                            accept,
+                            self.picked_tx.clone(),
+                            move || {
+                                let _ = proxy.send_event(Wake);
+                            },
+                        );
+                    }
                 }
                 UiEffect::NotImplemented(cmd) => info!("{cmd:?} is planned for a later version"),
                 UiEffect::WindowClosed(_) => {}

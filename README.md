@@ -7,7 +7,9 @@ shortcuts, data formats, settings.
 > **Status: stage 0, prototype.** One window with a tab strip, navigation buttons and an
 > address bar drawn with egui; pages are rendered by Servo. Firefox keyboard shortcuts work
 > through the core (Ctrl+T, Ctrl+W, Ctrl+Shift+T, Ctrl+Tab, Ctrl+L, Alt+←/→, F5, Ctrl+±/0 and
-> more). No history, bookmarks, downloads or dialogs yet. Not ready for everyday use.
+> more). Page dialogs, permission prompts, HTTP auth, the context menu, `<select>` popups
+> and the native file picker on Windows work. No history, bookmarks or downloads yet. Not
+> ready for everyday use.
 
 The specification and architecture are in [docs/spec.md](docs/spec.md) (in Russian).
 

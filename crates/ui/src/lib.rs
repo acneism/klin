@@ -6,6 +6,7 @@
 //! Строки интерфейса пока записаны здесь; в 0.2 их заменят строки Firefox в формате Fluent.
 
 mod icons;
+mod requests;
 mod url_display;
 
 use egui::{Color32, CornerRadius, Key, Rect, RichText, Sense, Vec2};
@@ -26,6 +27,12 @@ pub enum Action {
     Navigate(String),
     /// Клик по странице: фокус ввода переходит к ней.
     FocusPage,
+    /// Ответ на запрос страницы (диалог, меню, список).
+    Answer {
+        tab: TabId,
+        id: klin_shared::RequestId,
+        reply: klin_core::Reply,
+    },
 }
 
 /// Результат кадра интерфейса.
@@ -33,8 +40,10 @@ pub struct Frame {
     pub actions: Vec<Action>,
     /// Область страницы в точках egui.
     pub page_rect: Rect,
-    /// Фокус клавиатуры у интерфейса (адресная строка), а не у страницы.
+    /// Фокус клавиатуры у интерфейса (адресная строка, диалог), а не у страницы.
     pub ui_has_focus: bool,
+    /// Страница не получает ввод: открыт диалог, меню или список.
+    pub page_blocked: bool,
 }
 
 /// Состояние интерфейса одного окна.
@@ -45,6 +54,7 @@ pub struct BrowserUi {
     editing: bool,
     focus_url_bar: bool,
     shown_tab: Option<TabId>,
+    requests: requests::RequestUi,
 }
 
 fn url_bar_id() -> egui::Id {
@@ -104,14 +114,22 @@ impl BrowserUi {
                 }
             });
 
+        let page_blocked = match selected {
+            Some(tab) => self.requests.show(&ctx, tab, page_rect, &mut actions),
+            None => false,
+        };
+        if page_blocked {
+            actions.retain(|a| *a != Action::FocusPage);
+        }
         if actions.contains(&Action::FocusPage) {
             ctx.memory_mut(|m| m.surrender_focus(url_bar_id()));
         }
-        let ui_has_focus = ctx.memory(|m| m.focused().is_some());
+        let ui_has_focus = page_blocked || ctx.memory(|m| m.focused().is_some());
         Frame {
             actions,
             page_rect,
             ui_has_focus,
+            page_blocked,
         }
     }
 
