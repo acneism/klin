@@ -18,7 +18,8 @@ pub fn slice_up_to(s: &str, max_len: usize) -> &str {
 }
 
 pub fn ensure_url_path(p: impl AsRef<Path>) -> Result<Url> {
-    if let Some(u) = p.as_ref().to_str().and_then(|s| Url::parse(s).ok()) {
+    let parsed = p.as_ref().to_str().and_then(|s| Url::parse(s).ok());
+    if let Some(u) = parsed.filter(|u| u.scheme().len() > 1) {
         if u.scheme() == "file" {
             Ok(u)
         } else {
