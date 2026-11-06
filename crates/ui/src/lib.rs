@@ -5,6 +5,7 @@
 //!
 //! Строки интерфейса пока записаны здесь; в 0.2 их заменят строки Firefox в формате Fluent.
 
+mod favicons;
 mod icons;
 mod requests;
 mod url_display;
@@ -55,6 +56,7 @@ pub struct BrowserUi {
     focus_url_bar: bool,
     shown_tab: Option<TabId>,
     requests: requests::RequestUi,
+    favicons: favicons::Favicons,
 }
 
 fn url_bar_id() -> egui::Id {
@@ -158,6 +160,17 @@ impl BrowserUi {
         let Some(win) = browser.window(window) else {
             return;
         };
+        self.favicons.retain(|tab| win.tabs.contains(&tab));
+        if win
+            .tabs
+            .iter()
+            .filter_map(|t| browser.tab(*t))
+            .any(|t| t.load_status != LoadStatus::Complete)
+        {
+            // Индикатор загрузки анимирован; 20 кадров в секунду достаточно.
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(50));
+        }
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             let count = win.tabs.len().max(1) as f32;
@@ -171,7 +184,8 @@ impl BrowserUi {
                             let Some(tab) = browser.tab(tab_id) else {
                                 continue;
                             };
-                            tab_button(ui, tab, index == win.selected, width, actions);
+                            let icon = self.favicons.texture(ui.ctx(), tab);
+                            tab_button(ui, tab, icon, index == win.selected, width, actions);
                         }
                     });
                 });
@@ -276,7 +290,14 @@ impl BrowserUi {
     }
 }
 
-fn tab_button(ui: &mut egui::Ui, tab: &Tab, selected: bool, width: f32, actions: &mut Vec<Action>) {
+fn tab_button(
+    ui: &mut egui::Ui,
+    tab: &Tab,
+    icon: Option<egui::TextureId>,
+    selected: bool,
+    width: f32,
+    actions: &mut Vec<Action>,
+) {
     let title = tab_title(tab);
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 30.0), Sense::click());
     let visuals = ui.visuals().clone();
@@ -308,15 +329,31 @@ fn tab_button(ui: &mut egui::Ui, tab: &Tab, selected: bool, width: f32, actions:
         visuals.text_color(),
     );
 
-    // Заголовок рисуем сами: виджет-надпись занял бы место в ряду ещё раз.
-    let text_left = rect.left() + 10.0;
-    let text_width = (close_rect.left() - 4.0 - text_left).max(0.0);
+    // Значок: при загрузке — индикатор, без значка — значок по умолчанию, как в Firefox.
+    let icon_rect = Rect::from_min_size(
+        egui::pos2(rect.left() + 10.0, rect.center().y - 8.0),
+        Vec2::splat(16.0),
+    );
     let loading = tab.load_status != LoadStatus::Complete;
-    let label = if loading {
-        format!("⟳ {title}")
+    if loading {
+        let time = ui.input(|i| i.time);
+        icons::spinner(ui.painter(), icon_rect, visuals.selection.bg_fill, time);
+    } else if let Some(texture) = icon {
+        let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+        ui.painter().image(texture, icon_rect, uv, Color32::WHITE);
     } else {
-        title.clone()
-    };
+        icons::paint(
+            ui.painter(),
+            icon_rect.shrink(1.0),
+            Icon::Globe,
+            visuals.weak_text_color(),
+        );
+    }
+
+    // Заголовок рисуем сами: виджет-надпись занял бы место в ряду ещё раз.
+    let text_left = icon_rect.right() + 7.0;
+    let text_width = (close_rect.left() - 4.0 - text_left).max(0.0);
+    let label = title.clone();
     let color = if selected {
         visuals.strong_text_color()
     } else {

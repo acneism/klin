@@ -11,6 +11,8 @@ pub enum Icon {
     Home,
     Plus,
     Close,
+    /// Значок страницы без собственного значка (в Firefox — defaultFavicon).
+    Globe,
 }
 
 /// Кнопка-значок размером `size` точек.
@@ -79,9 +81,34 @@ pub fn paint(painter: &egui::Painter, r: Rect, icon: Icon, color: Color32) {
                 at(0.82, 0.38),
             ]);
         }
+        Icon::Globe => {
+            let c = r.center();
+            let radius = r.width() * 0.48;
+            painter.circle_stroke(c, radius, Stroke::new(1.2, color));
+            painter.add(Shape::ellipse_stroke(
+                c,
+                vec2(radius * 0.45, radius),
+                Stroke::new(1.0, color),
+            ));
+            line(vec![at(0.02, 0.5), at(0.98, 0.5)]);
+        }
         Icon::Plus => {
             line(vec![at(0.5, 0.0), at(0.5, 1.0)]);
             line(vec![at(0.0, 0.5), at(1.0, 0.5)]);
         }
     }
+}
+
+/// Индикатор загрузки на месте значка вкладки: вращающаяся дуга.
+pub fn spinner(painter: &egui::Painter, r: Rect, color: Color32, time: f64) {
+    let c = r.center();
+    let radius = r.width() * 0.45;
+    let start = (time * 6.0) as f32;
+    let arc: Vec<Pos2> = (0..=20)
+        .map(|i| {
+            let a = start + i as f32 / 20.0 * 4.2;
+            c + vec2(a.cos(), a.sin()) * radius
+        })
+        .collect();
+    painter.add(Shape::line(arc, Stroke::new(2.0, color)));
 }

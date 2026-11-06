@@ -16,7 +16,8 @@ pub struct Tab {
     pub window: WindowId,
     pub url: Option<Url>,
     pub title: String,
-    pub favicon: Option<Image>,
+    /// Значок сайта. `Arc`: интерфейс узнаёт смену значка по указателю, не сравнивая пиксели.
+    pub favicon: Option<std::sync::Arc<Image>>,
     pub status_text: Option<String>,
     pub load_status: LoadStatus,
     pub can_back: bool,
@@ -499,6 +500,10 @@ impl Browser {
             EngineEvent::LoadStatus { tab, status } => {
                 if let Some(t) = self.tabs.get_mut(&tab) {
                     t.load_status = status;
+                    // Новый документ: значок прежней страницы больше не относится к вкладке.
+                    if status == LoadStatus::Started {
+                        t.favicon = None;
+                    }
                 }
             }
             EngineEvent::UrlChanged { tab, url } => {
@@ -523,7 +528,7 @@ impl Browser {
             }
             EngineEvent::FaviconChanged { tab, icon } => {
                 if let Some(t) = self.tabs.get_mut(&tab) {
-                    t.favicon = Some(icon);
+                    t.favicon = Some(std::sync::Arc::new(icon));
                 }
             }
             EngineEvent::StatusTextChanged { tab, text } => {
@@ -915,6 +920,27 @@ mod tests {
         b.handle_event(&mut e, EngineEvent::Request { tab, id, kind });
         b.close_tab(&mut e, tab);
         assert!(e.calls.contains(&Call::Answer(id, Reply::Dismiss)));
+    }
+
+    #[test]
+    fn favicon_is_reset_when_a_new_page_starts_loading() {
+        let (mut b, mut e, w) = setup();
+        let tab = b.window(w).unwrap().tabs[0];
+        let icon = Image {
+            width: 1,
+            height: 1,
+            rgba: vec![0, 0, 0, 255],
+        };
+        b.handle_event(&mut e, EngineEvent::FaviconChanged { tab, icon });
+        assert!(b.tab(tab).unwrap().favicon.is_some());
+        b.handle_event(
+            &mut e,
+            EngineEvent::LoadStatus {
+                tab,
+                status: LoadStatus::Started,
+            },
+        );
+        assert!(b.tab(tab).unwrap().favicon.is_none());
     }
 
     #[test]
