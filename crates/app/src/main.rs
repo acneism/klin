@@ -12,7 +12,8 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 
 use klin_core::input::{Key, Modifiers, MouseButton, NamedKey};
 use klin_core::{
-    Browser, Command, InputEvent, KeyChord, browser::UiEffect, command, default_shortcuts,
+    Browser, Command, InputEvent, KeyChord, VisitKind, browser::UiEffect, command,
+    default_shortcuts,
 };
 use klin_downloads::{DownloadRequest, DownloadService, default_download_dir};
 use klin_engine::{EngineConfig, ServoEngine, Waker};
@@ -20,7 +21,9 @@ use klin_profile::{Profile, ProfileError};
 use klin_shared::download::DownloadEvent;
 use klin_shared::{Url, WindowId};
 use klin_storage::ContentPrefs;
+use klin_storage::PlacesService;
 use klin_storage::content_prefs::FULL_ZOOM;
+use klin_storage::places_service::Transition;
 use klin_ui::{Action, BrowserUi};
 use log::{info, warn};
 use winit::application::ApplicationHandler;
@@ -31,6 +34,10 @@ use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use winit::window::{Window, WindowAttributes};
 
 const APP_NAME: &str = "Klin";
+/// Сколько подсказок показывает адресная строка (`browser.urlbar.maxRichResults` в Firefox — 10).
+const SUGGESTIONS_LIMIT: u32 = 10;
+/// Сколько последних посещений загружает боковая панель истории.
+const HISTORY_SIDEBAR_LIMIT: usize = 500;
 
 #[derive(Debug)]
 struct Wake;
@@ -147,6 +154,13 @@ struct Running {
     /// Запросы на загрузку, для которых уже получены cookies движка.
     download_start_tx: Sender<DownloadRequest>,
     download_start_rx: Receiver<DownloadRequest>,
+    places: PlacesService,
+    suggestions_rx: Receiver<(WindowId, String, Vec<klin_ui::Suggestion>)>,
+    suggestions_tx: Sender<(WindowId, String, Vec<klin_ui::Suggestion>)>,
+    bookmark_rx: Receiver<(Url, bool)>,
+    bookmark_tx: Sender<(Url, bool)>,
+    history_rx: Receiver<(WindowId, Vec<klin_ui::HistoryItem>)>,
+    history_tx: Sender<(WindowId, Vec<klin_ui::HistoryItem>)>,
     browser: Browser,
     shortcuts: Vec<(KeyChord, Command)>,
     // Порядок важен: движок (и GL-контексты окон) отпускается раньше окон ОС.
@@ -246,6 +260,10 @@ impl Running {
             })
         };
         let (download_start_tx, download_start_rx) = channel();
+        let places = PlacesService::start(profile.path("places.sqlite"));
+        let (suggestions_tx, suggestions_rx) = channel();
+        let (bookmark_tx, bookmark_rx) = channel();
+        let (history_tx, history_rx) = channel();
         let mut running = Self {
             proxy,
             picked_tx,
@@ -256,6 +274,13 @@ impl Running {
             download_rx,
             download_start_tx,
             download_start_rx,
+            places,
+            suggestions_rx,
+            suggestions_tx,
+            bookmark_rx,
+            bookmark_tx,
+            history_rx,
+            history_tx,
             browser: Browser::new(),
             shortcuts: default_shortcuts(),
             engine,
@@ -362,6 +387,24 @@ impl Running {
             self.browser
                 .answer(&mut self.engine, picked.tab, picked.id, reply);
             self.redraw_tab(picked.tab);
+        }
+        while let Ok((window, query, items)) = self.suggestions_rx.try_recv() {
+            if let Some(w) = self.win_mut(window) {
+                w.ui.set_suggestions(&query, items);
+                w.window.request_redraw();
+            }
+        }
+        while let Ok((url, bookmarked)) = self.bookmark_rx.try_recv() {
+            self.browser.set_bookmarked(&url, bookmarked);
+            for w in &self.windows {
+                w.window.request_redraw();
+            }
+        }
+        while let Ok((window, items)) = self.history_rx.try_recv() {
+            if let Some(w) = self.win_mut(window) {
+                w.ui.set_history(items);
+                w.window.request_redraw();
+            }
         }
         while let Ok(request) = self.download_start_rx.try_recv() {
             self.downloads.start(request);
@@ -489,6 +532,33 @@ impl Running {
                 }
             }
             Action::ClearDownloads => self.browser.clear_downloads(),
+            Action::Suggest(query) => {
+                let tx = self.suggestions_tx.clone();
+                let proxy = self.proxy.clone();
+                let q = query.clone();
+                self.places.search(query, SUGGESTIONS_LIMIT, move |found| {
+                    let items = found
+                        .into_iter()
+                        .map(|s| klin_ui::Suggestion {
+                            url: s.url,
+                            title: s.title,
+                        })
+                        .collect();
+                    let _ = tx.send((id, q, items));
+                    let _ = proxy.send_event(Wake);
+                });
+            }
+            Action::NavigateSuggestion { query, url } => {
+                self.places.accept_suggestion(query, url.clone());
+                self.browser
+                    .open_url(&mut self.engine, id, &url, VisitKind::Typed);
+            }
+            Action::OpenUrl(url) => {
+                self.browser
+                    .open_url(&mut self.engine, id, &url, VisitKind::Link)
+            }
+            Action::RemoveBookmark(url) => self.remove_bookmark(url),
+            Action::ToggleHistorySidebar => self.toggle_history(id),
             Action::CloseTab(tab) => {
                 let effects = self.browser.close_tab(&mut self.engine, tab);
                 self.apply(event_loop, effects);
@@ -571,6 +641,48 @@ impl Running {
                         w.window.request_redraw();
                     }
                 }
+                UiEffect::RecordVisit {
+                    url,
+                    kind,
+                    referrer,
+                } => {
+                    let transition = match kind {
+                        VisitKind::Link => Transition::Link,
+                        VisitKind::Typed => Transition::Typed,
+                        VisitKind::Bookmark => Transition::Bookmark,
+                        VisitKind::Reload => Transition::Reload,
+                    };
+                    self.places.record_visit(url, transition, referrer);
+                    // Открытые панели истории обновляются.
+                    let open: Vec<WindowId> = self
+                        .windows
+                        .iter()
+                        .filter(|w| w.ui.history_open())
+                        .map(|w| w.id)
+                        .collect();
+                    for window in open {
+                        self.load_history(window);
+                    }
+                }
+                UiEffect::RecordTitle { url, title } => self.places.record_title(url, title),
+                UiEffect::QueryBookmark(url) => {
+                    let tx = self.bookmark_tx.clone();
+                    let proxy = self.proxy.clone();
+                    let u = url.clone();
+                    self.places.is_bookmarked(url, move |bookmarked| {
+                        let _ = tx.send((u, bookmarked));
+                        let _ = proxy.send_event(Wake);
+                    });
+                }
+                UiEffect::AddBookmark { url, title } => self.places.add_bookmark(url, title),
+                UiEffect::RemoveBookmark(url) => self.remove_bookmark(url),
+                UiEffect::ShowBookmarkPanel(window) => {
+                    if let Some(w) = self.win_mut(window) {
+                        w.ui.show_bookmark_panel();
+                        w.window.request_redraw();
+                    }
+                }
+                UiEffect::ToggleHistorySidebar(window) => self.toggle_history(window),
                 UiEffect::ToggleDownloadsPanel(window) => {
                     if let Some(w) = self.win_mut(window) {
                         w.ui.toggle_downloads();
@@ -586,6 +698,41 @@ impl Running {
                 UiEffect::NotImplemented(cmd) => info!("{cmd:?} is planned for a later version"),
             }
         }
+    }
+
+    fn remove_bookmark(&mut self, url: Url) {
+        self.places.remove_bookmarks(url.clone());
+        self.browser.set_bookmarked(&url, false);
+    }
+
+    fn toggle_history(&mut self, window: WindowId) {
+        let Some(w) = self.win_mut(window) else {
+            return;
+        };
+        let open = w.ui.toggle_history();
+        w.window.request_redraw();
+        if open {
+            self.load_history(window);
+        }
+    }
+
+    /// Загрузить последние посещения в боковую панель окна.
+    fn load_history(&self, window: WindowId) {
+        let tx = self.history_tx.clone();
+        let proxy = self.proxy.clone();
+        self.places
+            .recent_history(HISTORY_SIDEBAR_LIMIT, move |entries| {
+                let items = entries
+                    .into_iter()
+                    .map(|e| klin_ui::HistoryItem {
+                        url: e.url,
+                        title: e.title,
+                        visited_ms: e.visited_ms,
+                    })
+                    .collect();
+                let _ = tx.send((window, items));
+                let _ = proxy.send_event(Wake);
+            });
     }
 
     fn update_titles(&mut self) {

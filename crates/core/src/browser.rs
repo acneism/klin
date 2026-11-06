@@ -28,6 +28,13 @@ pub struct Tab {
     pub opener: Option<TabId>,
     /// Причина сбоя: вкладка показывает страницу сбоя с кнопкой «Перезагрузить».
     pub crashed: Option<String>,
+    /// Есть ли закладка на текущий адрес (`None` — ещё не известно).
+    pub bookmarked: Option<bool>,
+    /// Как начат текущий переход — тип посещения для истории.
+    pub next_visit: Option<VisitKind>,
+    /// Движок уже сообщил адрес документа. До этого `url` — только запрошенный адрес,
+    /// и первый `UrlChanged` с тем же адресом — это настоящее посещение.
+    pub committed: bool,
     /// Запросы страницы в порядке поступления (диалоги, разрешения, меню).
     /// Как в Firefox, диалог привязан к вкладке: при переключении вкладок он не теряется.
     pub requests: Vec<PageRequest>,
@@ -57,6 +64,16 @@ pub struct ClosedTab {
     pub title: String,
 }
 
+/// Тип посещения для истории — как переходы (transition) в Firefox.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VisitKind {
+    Link,
+    /// Адрес введён или выбран в адресной строке.
+    Typed,
+    Bookmark,
+    Reload,
+}
+
 /// Что интерфейс должен сделать в ответ на команду или событие.
 #[derive(Clone, Debug, PartialEq)]
 pub enum UiEffect {
@@ -81,6 +98,28 @@ pub enum UiEffect {
     },
     /// Открыть или закрыть панель загрузок (Ctrl+J).
     ToggleDownloadsPanel(WindowId),
+    /// Записать посещение в историю.
+    RecordVisit {
+        url: Url,
+        kind: VisitKind,
+        referrer: Option<Url>,
+    },
+    /// Записать заголовок страницы в историю.
+    RecordTitle {
+        url: Url,
+        title: String,
+    },
+    /// Узнать, есть ли закладка на адрес (ответ — [`Browser::set_bookmarked`]).
+    QueryBookmark(Url),
+    AddBookmark {
+        url: Url,
+        title: Option<String>,
+    },
+    RemoveBookmark(Url),
+    /// Показать панель закладки у звёздочки (как «Изменить закладку» в Firefox).
+    ShowBookmarkPanel(WindowId),
+    /// Открыть или закрыть боковую панель истории (Ctrl+H).
+    ToggleHistorySidebar(WindowId),
     /// Масштаб сайта изменился и должен быть сохранён (`None` — сброшен к 100 %).
     SiteZoomChanged {
         site: String,
@@ -258,6 +297,9 @@ impl Browser {
                 opener,
                 crashed: None,
                 requests: Vec::new(),
+                bookmarked: None,
+                next_visit: None,
+                committed: false,
             },
         );
         let tabs = &self.tabs;
@@ -443,8 +485,43 @@ impl Browser {
             return;
         };
         if let Some(tab) = self.window(window).and_then(Window::selected_tab) {
+            if let Some(t) = self.tabs.get_mut(&tab) {
+                t.next_visit = Some(VisitKind::Typed);
+            }
             engine.load(tab, &url);
         }
+    }
+
+    /// Открыть адрес во вкладке как переход из закладки или списка истории.
+    pub fn open_url(
+        &mut self,
+        engine: &mut dyn Engine,
+        window: WindowId,
+        url: &Url,
+        kind: VisitKind,
+    ) {
+        if let Some(tab) = self.window(window).and_then(Window::selected_tab) {
+            if let Some(t) = self.tabs.get_mut(&tab) {
+                t.next_visit = Some(kind);
+            }
+            engine.load(tab, url);
+        }
+    }
+
+    /// Ответ хранилища: есть ли закладка на адрес. Обновляет все вкладки с этим адресом.
+    pub fn set_bookmarked(&mut self, url: &Url, bookmarked: bool) {
+        for tab in self.tabs.values_mut() {
+            if tab.url.as_ref() == Some(url) {
+                tab.bookmarked = Some(bookmarked);
+            }
+        }
+    }
+
+    fn is_private_tab(&self, tab: TabId) -> bool {
+        self.tabs
+            .get(&tab)
+            .and_then(|t| self.window(t.window))
+            .is_some_and(|w| w.private)
     }
 
     /// Выполнить команду в окне.
@@ -497,13 +574,33 @@ impl Browser {
                 }
             }
             NextTab | PreviousTab | SelectLastTab => {}
+            ToggleHistorySidebar => return vec![UiEffect::ToggleHistorySidebar(window)],
+            Bookmark => {
+                // Как Ctrl+D и звёздочка в Firefox: новая закладка создаётся сразу, затем
+                // открывается панель закладки; для уже существующей — только панель.
+                let Some(t) = selected.and_then(|id| self.tabs.get_mut(&id)) else {
+                    return Vec::new();
+                };
+                let Some(url) = t.url.clone().filter(is_bookmarkable) else {
+                    return Vec::new();
+                };
+                let mut effects = Vec::new();
+                if t.bookmarked != Some(true) {
+                    let title = Some(t.title.clone()).filter(|t| !t.is_empty());
+                    effects.push(UiEffect::AddBookmark {
+                        url: url.clone(),
+                        title,
+                    });
+                    self.set_bookmarked(&url, true);
+                }
+                effects.push(UiEffect::ShowBookmarkPanel(window));
+                return effects;
+            }
             Find
             | FindAgain
             | FindPrevious
-            | Bookmark
             | ToggleBookmarksToolbar
             | ShowAllBookmarks
-            | ToggleHistorySidebar
             | ShowAllHistory
             | ToggleReaderMode
             | ToggleFullScreen => return vec![UiEffect::NotImplemented(command)],
@@ -521,7 +618,12 @@ impl Browser {
         match command {
             Back => engine.go_back(tab),
             Forward => engine.go_forward(tab),
-            Reload => engine.reload(tab, false),
+            Reload => {
+                if let Some(t) = self.tabs.get_mut(&tab) {
+                    t.next_visit = Some(VisitKind::Reload);
+                }
+                engine.reload(tab, false)
+            }
             ReloadSkipCache => engine.reload(tab, true),
             Stop => {
                 engine.stop(tab);
@@ -615,12 +717,41 @@ impl Browser {
                         engine.set_zoom(tab, z);
                     }
                 }
-                t.url = Some(url);
+                let previous = t.url.replace(url.clone());
                 t.crashed = None;
+                let kind = t.next_visit.take().unwrap_or(VisitKind::Link);
+                let same_page = t.committed && previous.as_ref() == Some(&url);
+                let previous = previous.filter(|_| t.committed);
+                t.committed = true;
+                if !same_page {
+                    t.bookmarked = None;
+                }
+                let mut effects = Vec::new();
+                if is_bookmarkable(&url) {
+                    if !same_page {
+                        effects.push(UiEffect::QueryBookmark(url.clone()));
+                    }
+                    // Приватные окна в историю не пишутся, как в Firefox.
+                    if !self.is_private_tab(tab) && (!same_page || kind == VisitKind::Reload) {
+                        effects.push(UiEffect::RecordVisit {
+                            url,
+                            kind,
+                            referrer: previous,
+                        });
+                    }
+                }
+                return effects;
             }
             EngineEvent::TitleChanged { tab, title } => {
+                let private = self.is_private_tab(tab);
                 if let Some(t) = self.tabs.get_mut(&tab) {
-                    t.title = title;
+                    t.title = title.clone();
+                    if let Some(url) = t.url.clone().filter(is_bookmarkable)
+                        && !private
+                        && !title.trim().is_empty()
+                    {
+                        return vec![UiEffect::RecordTitle { url, title }];
+                    }
                 }
             }
             EngineEvent::FaviconChanged { tab, icon } => {
@@ -732,6 +863,12 @@ impl Browser {
         }
         Vec::new()
     }
+}
+
+/// Адреса, которые попадают в историю и закладки: веб-страницы и файлы, но не внутренние
+/// about:-страницы (Firefox их тоже не хранит).
+fn is_bookmarkable(url: &Url) -> bool {
+    matches!(url.scheme(), "http" | "https" | "file")
 }
 
 fn new_tab_url() -> Url {
@@ -1140,6 +1277,147 @@ mod tests {
         assert_eq!(b.downloads()[0].state, S::Finished { size: 10 });
         b.clear_downloads();
         assert!(b.downloads().is_empty());
+    }
+
+    #[test]
+    fn typed_visit_and_title_go_to_history() {
+        let (mut b, mut e, w) = setup();
+        let tab = b.window(w).unwrap().tabs[0];
+        b.load_input(&mut e, w, "servo.org");
+        let effects = b.handle_event(
+            &mut e,
+            EngineEvent::UrlChanged {
+                tab,
+                url: url("https://servo.org/"),
+            },
+        );
+        assert!(effects.contains(&UiEffect::RecordVisit {
+            url: url("https://servo.org/"),
+            kind: VisitKind::Typed,
+            referrer: None,
+        }));
+        assert!(effects.contains(&UiEffect::QueryBookmark(url("https://servo.org/"))));
+        let effects = b.handle_event(
+            &mut e,
+            EngineEvent::TitleChanged {
+                tab,
+                title: "Servo".into(),
+            },
+        );
+        assert_eq!(
+            effects,
+            [UiEffect::RecordTitle {
+                url: url("https://servo.org/"),
+                title: "Servo".into()
+            }]
+        );
+        // Следующий переход по ссылке — уже Link.
+        let effects = b.handle_event(
+            &mut e,
+            EngineEvent::UrlChanged {
+                tab,
+                url: url("https://servo.org/blog/"),
+            },
+        );
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            UiEffect::RecordVisit {
+                kind: VisitKind::Link,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn first_load_of_a_tab_is_a_visit() {
+        let (mut b, mut e, w) = setup();
+        let tab = b.window(w).unwrap().tabs[0];
+        let effects = b.handle_event(
+            &mut e,
+            EngineEvent::UrlChanged {
+                tab,
+                url: url("https://a.example/"),
+            },
+        );
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, UiEffect::RecordVisit { .. }))
+        );
+        assert!(effects.contains(&UiEffect::QueryBookmark(url("https://a.example/"))));
+        // Повтор того же адреса (например, якорь не менялся) — уже не посещение.
+        let effects = b.handle_event(
+            &mut e,
+            EngineEvent::UrlChanged {
+                tab,
+                url: url("https://a.example/"),
+            },
+        );
+        assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn private_windows_and_internal_pages_are_not_recorded() {
+        let mut b = Browser::new();
+        let mut e = FakeEngine::default();
+        let w = b.open_window(
+            &mut e,
+            WindowId::next(),
+            true,
+            Some(url("https://p.example/")),
+        );
+        let tab = b.window(w).unwrap().tabs[0];
+        let effects = b.handle_event(
+            &mut e,
+            EngineEvent::UrlChanged {
+                tab,
+                url: url("https://q.example/"),
+            },
+        );
+        assert!(
+            !effects
+                .iter()
+                .any(|e| matches!(e, UiEffect::RecordVisit { .. }))
+        );
+        let (mut b, mut e, w) = setup();
+        let tab = b.window(w).unwrap().tabs[0];
+        let effects = b.handle_event(
+            &mut e,
+            EngineEvent::UrlChanged {
+                tab,
+                url: url("about:newtab"),
+            },
+        );
+        assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn ctrl_d_adds_bookmark_once_and_opens_panel() {
+        let (mut b, mut e, w) = setup();
+        let tab = b.window(w).unwrap().tabs[0];
+        b.handle_event(
+            &mut e,
+            EngineEvent::TitleChanged {
+                tab,
+                title: "A".into(),
+            },
+        );
+        let effects = b.execute(&mut e, w, Command::Bookmark);
+        assert_eq!(
+            effects,
+            [
+                UiEffect::AddBookmark {
+                    url: url("https://a.example/"),
+                    title: Some("A".into())
+                },
+                UiEffect::ShowBookmarkPanel(w)
+            ]
+        );
+        assert_eq!(b.tab(tab).unwrap().bookmarked, Some(true));
+        assert_eq!(
+            b.execute(&mut e, w, Command::Bookmark),
+            [UiEffect::ShowBookmarkPanel(w)]
+        );
     }
 
     #[test]

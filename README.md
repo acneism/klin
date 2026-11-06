@@ -11,8 +11,9 @@ shortcuts, data formats, settings.
 > and the native file picker on Windows work. The profile lives in `%APPDATA%\Klin` in
 > Firefox's layout (`-profile <path>` to override); per-site zoom is saved in
 > `content-prefs.sqlite`. Stop (Esc) and file downloads work without changes to Servo,
-> with recorded limitations (see the spec). No history or bookmarks yet. Not ready for
-> everyday use.
+> with recorded limitations (see the spec). History and bookmarks are stored in
+> `places.sqlite` (ported from Mozilla's application-services): URL bar suggestions ranked by
+> frecency, Ctrl+D with a star button, Ctrl+H history sidebar. Not ready for everyday use.
 
 The specification and architecture are in [docs/spec.md](docs/spec.md) (in Russian).
 
@@ -47,7 +48,7 @@ monthly breaking changes in Servo's API are fixed in one place.
 | `internal-pages` | about: pages served through the `klin:` scheme | about:newtab |
 | `ui` | egui interface: tabs, navigation, address bar, link status, crash page | prototype |
 | `profile` | profile folder, `profiles.ini`, `parent.lock` | done for 0.1 |
-| `storage` | `content-prefs.sqlite` service (per-site zoom) | started |
+| `storage` | `content-prefs.sqlite` (per-site zoom); `places.sqlite` history and bookmarks, ported from application-services | history, bookmarks, suggestions |
 | `downloads` | download service: background HTTP download with the engine's cookies, Firefox-style file names | done for 0.1 |
 | `platform-win` | open a file, show it in Explorer | started |
 | `sync`, `remote-settings`, `content-blocking`, `extensions`, `importer` | services and Windows integration | stubs, scheduled per the version plan |

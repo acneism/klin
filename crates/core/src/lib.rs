@@ -15,7 +15,7 @@ pub mod testing;
 pub mod urifixup;
 pub mod zoom;
 
-pub use browser::{Browser, ClosedTab, Tab, Window};
+pub use browser::{Browser, ClosedTab, Tab, VisitKind, Window};
 pub use command::{Command, KeyChord, default_shortcuts};
 pub use engine::{
     Engine, EngineEvent, MenuAction, MenuItem, PageRequest, PermissionFeature, Reply, RequestKind,

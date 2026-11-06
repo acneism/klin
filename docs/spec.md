@@ -179,7 +179,7 @@ pub enum Command { NewTab, CloseTab, UndoCloseTab, Back, Forward, Reload, Stop,
 
 | Что берём из Firefox | Куда | Как | Лицензия |
 | --- | --- | --- | --- |
-| places: история, закладки, frecency, поиск для адресной строки | storage | готовый крейт | MPL 2.0 |
+| places: история, закладки, frecency, поиск для адресной строки | storage | перенос: крейт требует rusqlite 0.37, Servo 0.7.0 — 0.38, а две встроенные SQLite в одной программе Cargo не допускает; перенесено без синхронизации, uniffi и glean (ноябрь 2026) | MPL 2.0 |
 | logins: хранение и шифрование паролей | storage | готовый крейт; шифрование — через трейт `EncryptorDecryptor` (можно своё, без NSS), ключ — через свой `KeyManager` ([документация](https://mozilla.github.io/application-services/book/rust-docs/logins/encryption/index.html)) | MPL 2.0 |
 | fxa-client, sync15, sync\_manager, tabs: аккаунт и синхронизация | sync | готовые крейты; криптография Sync идёт через NSS (rc\_crypto) | MPL 2.0 |
 | remote-settings: клиент рассылки настроек | remote-settings | готовый крейт | MPL 2.0 |

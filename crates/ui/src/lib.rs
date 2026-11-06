@@ -8,6 +8,7 @@
 mod downloads;
 mod favicons;
 mod icons;
+mod places_ui;
 mod requests;
 mod url_display;
 
@@ -17,6 +18,7 @@ use klin_core::browser::Tab;
 use klin_core::{Browser, Command};
 use klin_shared::{LoadStatus, TabId, WindowId};
 
+pub use places_ui::{HistoryItem, Suggestion};
 pub use url_display::display_url;
 
 /// Что пользователь сделал в интерфейсе.
@@ -33,6 +35,18 @@ pub enum Action {
     OpenDownload(std::path::PathBuf),
     ShowDownloadInFolder(std::path::PathBuf),
     ClearDownloads,
+    /// Текст адресной строки изменился: нужны подсказки.
+    Suggest(String),
+    /// Выбрана подсказка адресной строки.
+    NavigateSuggestion {
+        query: String,
+        url: klin_shared::Url,
+    },
+    /// Открыть адрес в текущей вкладке (из боковой панели истории).
+    OpenUrl(klin_shared::Url),
+    RemoveBookmark(klin_shared::Url),
+    /// Открыть или закрыть боковую панель истории.
+    ToggleHistorySidebar,
     /// Вкладку перетащили на позицию `index`.
     MoveTab {
         tab: TabId,
@@ -69,6 +83,15 @@ pub struct BrowserUi {
     favicons: favicons::Favicons,
     downloads_open: bool,
     downloads_button: Option<Rect>,
+    suggestions: Vec<Suggestion>,
+    suggestions_query: String,
+    suggestion_selected: Option<usize>,
+    url_bar_rect: Option<Rect>,
+    star_button: Option<Rect>,
+    bookmark_panel_open: bool,
+    history_open: bool,
+    history: Vec<HistoryItem>,
+    history_filter: String,
 }
 
 fn url_bar_id() -> egui::Id {
@@ -85,6 +108,34 @@ impl BrowserUi {
     /// Поставить фокус в адресную строку и выделить адрес (Ctrl+L, Alt+D, F6, новая вкладка).
     pub fn focus_url_bar(&mut self) {
         self.focus_url_bar = true;
+    }
+
+    /// Подсказки для введённого текста. Устаревшие ответы (текст уже другой) отбрасываются.
+    pub fn set_suggestions(&mut self, query: &str, items: Vec<Suggestion>) {
+        if self.editing && self.url_text.trim() == query {
+            self.suggestions = items;
+            self.suggestions_query = query.to_owned();
+            self.suggestion_selected = None;
+        }
+    }
+
+    /// Показать панель закладки у звёздочки.
+    pub fn show_bookmark_panel(&mut self) {
+        self.bookmark_panel_open = true;
+    }
+
+    /// Открыть или закрыть боковую панель истории. Возвращает новое состояние.
+    pub fn toggle_history(&mut self) -> bool {
+        self.history_open = !self.history_open;
+        self.history_open
+    }
+
+    pub fn history_open(&self) -> bool {
+        self.history_open
+    }
+
+    pub fn set_history(&mut self, items: Vec<HistoryItem>) {
+        self.history = items;
     }
 
     /// Открыть или закрыть панель загрузок (кнопка, Ctrl+J).
@@ -118,6 +169,20 @@ impl BrowserUi {
             self.nav_bar(ui, selected, browser.downloads(), &mut actions);
         });
 
+        if self.history_open {
+            egui::Panel::left("klin-history-sidebar")
+                .resizable(true)
+                .default_size(300.0)
+                .show(root, |ui| {
+                    places_ui::history_sidebar(
+                        ui,
+                        &self.history,
+                        &mut self.history_filter,
+                        &mut actions,
+                    );
+                });
+        }
+
         let mut page_rect = Rect::NOTHING;
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
@@ -137,6 +202,23 @@ impl BrowserUi {
                     status_panel(ui, page_rect, status);
                 }
             });
+
+        if let (Some(anchor), true, Some(tab)) =
+            (self.star_button, self.bookmark_panel_open, selected)
+        {
+            self.bookmark_panel_open = match &tab.url {
+                Some(url) => {
+                    places_ui::bookmark_panel(&ctx, anchor, url, tab.title.trim(), &mut actions)
+                }
+                None => false,
+            };
+        }
+        if actions
+            .iter()
+            .any(|a| matches!(a, Action::RemoveBookmark(_)))
+        {
+            self.bookmark_panel_open = false;
+        }
 
         // Панель может быть запрошена раньше, чем появится кнопка (загрузка ещё не началась):
         // тогда флаг ждёт кнопку.
@@ -314,6 +396,15 @@ impl BrowserUi {
                     }
                     self.downloads_button = Some(button.rect);
                 }
+                let can_bookmark = tab
+                    .and_then(|t| t.url.as_ref())
+                    .is_some_and(|u| matches!(u.scheme(), "http" | "https" | "file"));
+                let bookmarked = tab.and_then(|t| t.bookmarked) == Some(true);
+                let star = places_ui::star_button(ui, can_bookmark, bookmarked);
+                self.star_button = Some(star.rect);
+                if star.clicked() {
+                    actions.push(Action::Execute(Command::Bookmark));
+                }
                 self.url_bar(ui, actions);
             });
         });
@@ -328,6 +419,7 @@ impl BrowserUi {
             .desired_width(f32::INFINITY)
             .margin(Vec2::new(8.0, 6.0));
         let response = ui.add(edit);
+        self.url_bar_rect = Some(response.rect);
 
         if self.focus_url_bar {
             self.focus_url_bar = false;
@@ -336,20 +428,66 @@ impl BrowserUi {
         }
         if response.changed() {
             self.editing = true;
+            self.suggestion_selected = None;
+            let query = self.url_text.trim().to_owned();
+            if query.is_empty() {
+                self.suggestions.clear();
+            } else {
+                actions.push(Action::Suggest(query));
+            }
+        }
+        // Подсказки видны, пока пользователь правит адрес и текст не менялся с запроса.
+        let show = response.has_focus() || response.lost_focus();
+        let current = self.suggestions_query == self.url_text.trim();
+        if self.editing && show && current {
+            let ctx = ui.ctx().clone();
+            let anchor = response.rect;
+            if let Some(i) = places_ui::suggestions_popup(
+                &ctx,
+                anchor,
+                &self.suggestions,
+                &mut self.suggestion_selected,
+            ) {
+                self.choose_suggestion(i, actions);
+                return;
+            }
         }
         if response.lost_focus() {
             if ui.input(|i| i.key_pressed(Key::Enter)) {
+                if let Some(i) = self
+                    .suggestion_selected
+                    .filter(|&i| i < self.suggestions.len())
+                {
+                    self.choose_suggestion(i, actions);
+                    return;
+                }
                 let input = self.url_text.trim().to_owned();
                 if !input.is_empty() {
                     actions.push(Action::Navigate(input));
                     actions.push(Action::FocusPage);
                 }
                 self.editing = false;
+                self.suggestions.clear();
             } else if ui.input(|i| i.key_pressed(Key::Escape)) {
                 // Esc в адресной строке возвращает адрес страницы, как в Firefox.
                 self.editing = false;
+                self.suggestions.clear();
             }
         }
+    }
+}
+
+impl BrowserUi {
+    fn choose_suggestion(&mut self, index: usize, actions: &mut Vec<Action>) {
+        let url = self.suggestions[index].url.clone();
+        actions.push(Action::NavigateSuggestion {
+            query: self.suggestions_query.clone(),
+            url,
+        });
+        actions.push(Action::FocusPage);
+        self.editing = false;
+        self.suggestions.clear();
+        self.suggestion_selected = None;
     }
 }
 

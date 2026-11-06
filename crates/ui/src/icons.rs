@@ -17,6 +17,9 @@ pub enum Icon {
     Download,
     /// «Показать в папке».
     Folder,
+    /// Звёздочка закладки: контур и залитая.
+    Star,
+    StarFilled,
 }
 
 /// Кнопка-значок размером `size` точек.
@@ -116,6 +119,43 @@ pub fn paint(painter: &egui::Painter, r: Rect, icon: Icon, color: Color32) {
                 at(0.0, 0.92),
                 at(0.0, 0.15),
             ]);
+        }
+        Icon::Star | Icon::StarFilled => {
+            let c = r.center();
+            let outer = r.width() * 0.52;
+            let inner = outer * 0.45;
+            let points: Vec<Pos2> = (0..10)
+                .map(|i| {
+                    let a = -std::f32::consts::FRAC_PI_2 + i as f32 * std::f32::consts::PI / 5.0;
+                    let radius = if i % 2 == 0 { outer } else { inner };
+                    c + vec2(a.cos(), a.sin()) * radius
+                })
+                .collect();
+            if icon == Icon::StarFilled {
+                // Звезда не выпуклая: заливаем центр и лучи отдельно.
+                for k in 0..5 {
+                    let tri = vec![
+                        points[2 * k],
+                        points[(2 * k + 1) % 10],
+                        points[(2 * k + 9) % 10],
+                    ];
+                    painter.add(Shape::convex_polygon(
+                        tri,
+                        Color32::from_rgb(0x00, 0x60, 0xdf),
+                        Stroke::NONE,
+                    ));
+                }
+                let inner_poly: Vec<Pos2> = (0..5).map(|k| points[2 * k + 1]).collect();
+                painter.add(Shape::convex_polygon(
+                    inner_poly,
+                    Color32::from_rgb(0x00, 0x60, 0xdf),
+                    Stroke::NONE,
+                ));
+            } else {
+                let mut closed = points.clone();
+                closed.push(points[0]);
+                line(closed);
+            }
         }
         Icon::Plus => {
             line(vec![at(0.5, 0.0), at(0.5, 1.0)]);
