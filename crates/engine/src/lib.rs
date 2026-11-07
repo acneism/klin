@@ -48,6 +48,37 @@ pub struct EngineConfig {
 pub type PageBlitter = Box<dyn Fn(&glow::Context, [i32; 4]) + Send + Sync>;
 
 const FIND_JS: &str = include_str!("../js/find.js");
+const READABILITY_JS: &str = include_str!("../js/readability/Readability.js");
+const READERABLE_LIB_JS: &str = include_str!("../js/readability/Readability-readerable.js");
+const READER_JS: &str = include_str!("../js/reader.js");
+const READERABLE_JS: &str = include_str!("../js/readerable.js");
+
+fn wrap_script(library: &str, body: &str) -> String {
+    format!(
+        "(() => {{\n{library}\nreturn {};\n}})()",
+        body.trim().trim_end_matches(';')
+    )
+}
+
+fn parse_article(json: &str, url: &Url) -> Option<klin_internal_pages::reader::Article> {
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    let text = |key: &str| {
+        value
+            .get(key)
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+    };
+    Some(klin_internal_pages::reader::Article {
+        url: url.to_string(),
+        title: text("title").unwrap_or_default(),
+        byline: text("byline"),
+        content: text("content")?,
+        lang: text("lang"),
+        dir: text("dir"),
+        length: value.get("length").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
+    })
+}
 
 fn parse_find_result(json: &str) -> Option<klin_core::FindResult> {
     let value: serde_json::Value = serde_json::from_str(json).ok()?;
@@ -88,13 +119,20 @@ pub struct ServoEngine {
     servo: Servo,
     shared: Rc<Shared>,
     delegate: Rc<Delegate>,
+    reader: protocol::ReaderStore,
 }
 
 impl ServoEngine {
     pub fn new(waker: Waker, config: EngineConfig) -> Result<Self, EngineError> {
+        let reader = protocol::ReaderStore::default();
         let mut protocols = servo::protocol_handler::ProtocolRegistry::with_internal_protocols();
         protocols
-            .register(klin_internal_pages::SCHEME, protocol::InternalPages)
+            .register(
+                klin_internal_pages::SCHEME,
+                protocol::InternalPages {
+                    reader: reader.clone(),
+                },
+            )
             .map_err(|e| EngineError(format!("register {}: {e:?}", klin_internal_pages::SCHEME)))?;
 
         let opts = servo::Opts {
@@ -119,6 +157,7 @@ impl ServoEngine {
             servo,
             shared,
             delegate,
+            reader,
         })
     }
 
@@ -449,6 +488,61 @@ impl Engine for ServoEngine {
                     .borrow_mut()
                     .push_back(EngineEvent::FindResult { tab, result });
             }
+        });
+    }
+
+    fn check_readerable(&mut self, tab: TabId) {
+        let Some(webview) = self.webview(tab) else {
+            return;
+        };
+        let shared = self.shared.clone();
+        let script = wrap_script(READERABLE_LIB_JS, READERABLE_JS);
+        webview.evaluate_javascript(script, move |result| {
+            let readerable = match result {
+                Ok(servo::JSValue::Boolean(value)) => value,
+                Ok(other) => {
+                    log::debug!("readerable: unexpected result {other:?}");
+                    false
+                }
+                Err(error) => {
+                    log::debug!("readerable: {error:?}");
+                    false
+                }
+            };
+            shared
+                .events
+                .borrow_mut()
+                .push_back(EngineEvent::Readerable { tab, readerable });
+        });
+    }
+
+    fn show_reader(&mut self, tab: TabId) {
+        let Some(webview) = self.webview(tab) else {
+            return;
+        };
+        let Some(url) = webview.url() else {
+            return;
+        };
+        let store = self.reader.clone();
+        let target = webview.clone();
+        let script = wrap_script(READABILITY_JS, READER_JS);
+        webview.evaluate_javascript(script, move |result| {
+            let article = match result {
+                Ok(servo::JSValue::String(json)) => parse_article(&json, &url),
+                Ok(other) => {
+                    log::debug!("reader: unexpected result {other:?}");
+                    None
+                }
+                Err(error) => {
+                    log::debug!("reader: {error:?}");
+                    None
+                }
+            };
+            if let Some(article) = article {
+                store.insert(article);
+            }
+            let reader = internal_url(&klin_core::reader::reader_url(&url));
+            target.load(reader);
         });
     }
 

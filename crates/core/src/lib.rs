@@ -4,6 +4,7 @@ pub mod downloads;
 pub mod engine;
 pub mod input;
 pub mod prefs;
+pub mod reader;
 pub mod session;
 pub mod testing;
 pub mod urifixup;

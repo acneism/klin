@@ -17,6 +17,8 @@ pub enum Icon {
     Down,
     Up,
     Menu,
+    Reader,
+    ReaderActive,
 }
 
 pub fn button(ui: &mut Ui, enabled: bool, icon: Icon, size: f32) -> Response {
@@ -161,6 +163,21 @@ pub fn paint(painter: &egui::Painter, r: Rect, icon: Icon, color: Color32) {
         Icon::Menu => {
             for y in [0.2, 0.5, 0.8] {
                 line(vec![at(0.05, y), at(0.95, y)]);
+            }
+        }
+        Icon::Reader | Icon::ReaderActive => {
+            let color = if icon == Icon::ReaderActive {
+                Color32::from_rgb(0x00, 0x60, 0xdf)
+            } else {
+                color
+            };
+            let stroke = Stroke::new(1.6, color);
+            painter.add(Shape::closed_line(
+                vec![at(0.1, 0.0), at(0.9, 0.0), at(0.9, 1.0), at(0.1, 1.0)],
+                stroke,
+            ));
+            for y in [0.28, 0.5, 0.72] {
+                painter.add(Shape::line(vec![at(0.3, y), at(0.7, y)], stroke));
             }
         }
         Icon::Plus => {

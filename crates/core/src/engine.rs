@@ -16,6 +16,8 @@ pub trait Engine {
     fn send_input(&mut self, tab: TabId, input: InputEvent);
 
     fn find(&mut self, tab: TabId, request: FindRequest);
+    fn check_readerable(&mut self, tab: TabId);
+    fn show_reader(&mut self, tab: TabId);
 
     fn answer(&mut self, request: RequestId, reply: Reply);
 }
@@ -68,6 +70,10 @@ pub enum EngineEvent {
     FindResult {
         tab: TabId,
         result: FindResult,
+    },
+    Readerable {
+        tab: TabId,
+        readerable: bool,
     },
     DownloadRequested {
         tab: TabId,

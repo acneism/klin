@@ -54,7 +54,7 @@ Nov 6, 2026 · @Dias
 | 0.2 | Импорт из Firefox: закладки, история, cookies | мастер импорта данных Firefox | проверено: cookies пишутся через `SiteDataManager::set_cookie_for_url`; импорт запускается флагом `-migration` (как в Firefox), мастер с выбором данных — вместе с настройками |
 | 0.3 | Пароли: сохранение, автозаполнение, менеджер | about:logins, импорт паролей из профиля Firefox | отправка форм и заполнение полей — через `UserContentManager` и `evaluate_javascript` или патч |
 | 0.3 | Аккаунт Mozilla и Firefox Sync: закладки, история, пароли, открытые вкладки | меню «Войти в аккаунт», «Вкладки с других устройств» | страница входа в аккаунт должна работать в Servo |
-| 0.3 | Режим чтения | Reader View: Ctrl+Alt+R, F9 | есть: `evaluate_javascript`, `UserContentManager` |
+| 0.3 | Режим чтения | Reader View: Ctrl+Alt+R, F9 | сделано: Readability.js запускается через `evaluate_javascript` на копии документа, статья очищается ammonia и отдаётся страницей about:reader с CSP без скриптов; отступления: статья берётся из уже загруженной страницы, а не скачивается заново, поэтому about:reader после перезапуска показывает ошибку со ссылкой на исходник; панели настроек текста и цветов пока нет (тема следует системной); язык для времени чтения берётся из `lang` страницы, а не определяется по тексту |
 | 0.3 | Встроенный просмотр PDF | PDF.js | достаточная совместимость движка с PDF.js |
 | 0.3 | Защита от отслеживания по спискам | стандартный режим Enhanced Tracking Protection | есть: `WebResourceLoad::intercept` (только HTTP/HTTPS) |
 | 0.4 | WebExtensions, часть 1: manifest, content scripts, storage, tabs, runtime, кнопка на панели | реализация WebExtensions и схемы API из Firefox | `UserContentManager` есть, изолированных миров нет — патч в Servo |

@@ -101,6 +101,7 @@ fn lazy_tab(id: TabId, window: WindowId, state: &TabState, current: &EntryState)
         history_index: index,
         loaded: false,
         find_result: None,
+        readerable: false,
     }
 }
 

@@ -37,6 +37,7 @@ url = "2.5"
 # Same major as servo 0.7.0, so SQLite is compiled once.
 rusqlite = { version = "0.38", features = ["bundled"] }
 thiserror = "2"
+ammonia = "4.2.4"
 log = "0.4"
 winit = "0.30.13"
 # egui 0.36 is built on glow 0.17 and winit 0.30, the same versions as servo 0.7.0.

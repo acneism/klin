@@ -19,7 +19,8 @@ shortcuts, data formats, settings.
 > the selection API. `klin -migration` imports history, bookmarks and cookies from the default
 > Firefox profile. Settings: the ≡ menu → «Настройки» (about:preferences) and about:config,
 > stored in `prefs.js` like Firefox. The Library (Ctrl+Shift+H, Ctrl+Shift+O) shows history,
-> downloads and all bookmark folders with search and deletion. Not ready for everyday use.
+> downloads and all bookmark folders with search and deletion. Reader View (F9, Ctrl+Alt+R) uses
+> Mozilla's Readability.js and Firefox's reader styles. Not ready for everyday use.
 
 The specification and architecture are in [docs/spec.md](docs/spec.md) (in Russian).
 

@@ -501,6 +501,27 @@ impl BrowserUi {
                     .and_then(|t| t.url.as_ref())
                     .is_some_and(|u| matches!(u.scheme(), "http" | "https" | "file"));
                 let bookmarked = tab.and_then(|t| t.bookmarked) == Some(true);
+                let reader_active = tab
+                    .and_then(|t| t.url.as_ref())
+                    .is_some_and(klin_core::reader::is_reader);
+                if reader_active || tab.is_some_and(|t| t.readerable) {
+                    let icon = if reader_active {
+                        Icon::ReaderActive
+                    } else {
+                        Icon::Reader
+                    };
+                    let hint = if reader_active {
+                        "Закрыть режим чтения (F9)"
+                    } else {
+                        "Перейти в режим чтения (F9)"
+                    };
+                    if icons::button(ui, true, icon, 30.0)
+                        .on_hover_text(hint)
+                        .clicked()
+                    {
+                        actions.push(Action::Execute(Command::ToggleReaderMode));
+                    }
+                }
                 let star = places_ui::star_button(ui, can_bookmark, bookmarked);
                 self.star_button = Some(star.rect);
                 if star.clicked() {

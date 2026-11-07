@@ -29,6 +29,7 @@ pub struct Tab {
     pub loaded: bool,
     pub find_result: Option<crate::engine::FindResult>,
     pub committed: bool,
+    pub readerable: bool,
     pub requests: Vec<PageRequest>,
 }
 
@@ -316,6 +317,7 @@ impl Browser {
                 history_index: 0,
                 loaded: true,
                 find_result: None,
+                readerable: false,
             },
         );
         let tabs = &self.tabs;
@@ -683,7 +685,23 @@ impl Browser {
                 effects.push(UiEffect::ShowBookmarkPanel(window));
                 return effects;
             }
-            ToggleReaderMode | ToggleFullScreen => {
+            ToggleReaderMode => {
+                let Some(t) = selected.and_then(|tab| self.tabs.get(&tab)) else {
+                    return Vec::new();
+                };
+                let tab = t.id;
+                match t.url.as_ref().and_then(crate::reader::original_url) {
+                    Some(original) => {
+                        if let Some(t) = self.tabs.get_mut(&tab) {
+                            t.next_visit = Some(VisitKind::Link);
+                        }
+                        engine.load(tab, &original);
+                    }
+                    None if t.readerable && t.loaded => engine.show_reader(tab),
+                    None => {}
+                }
+            }
+            ToggleFullScreen => {
                 return vec![UiEffect::NotImplemented(command)];
             }
         }
@@ -783,6 +801,12 @@ impl Browser {
 
                     if status == LoadStatus::Started {
                         t.favicon = None;
+                        t.readerable = false;
+                    }
+                    let check = status == LoadStatus::Complete
+                        && t.url.as_ref().is_some_and(crate::reader::should_check_url);
+                    if check {
+                        engine.check_readerable(tab);
                     }
                 }
             }
@@ -912,6 +936,13 @@ impl Browser {
                 return vec![UiEffect::Redraw(tab)];
             }
             EngineEvent::NewFrame { tab } => return vec![UiEffect::Redraw(tab)],
+            EngineEvent::Readerable { tab, readerable } => {
+                if let Some(t) = self.tabs.get_mut(&tab) {
+                    let current = t.url.as_ref().is_some_and(crate::reader::should_check_url);
+                    t.readerable = readerable && current;
+                }
+                return vec![UiEffect::Redraw(tab)];
+            }
             EngineEvent::FindResult { tab, result } => {
                 if let Some(t) = self.tabs.get_mut(&tab) {
                     t.find_result = Some(result);
@@ -997,6 +1028,66 @@ mod tests {
             .iter()
             .map(|t| b.tab(*t).unwrap().url.as_ref().unwrap().to_string())
             .collect()
+    }
+
+    #[test]
+    fn reader_mode_checks_enters_and_leaves() {
+        let (mut b, mut e, w) = setup();
+        let tab = b.window(w).unwrap().selected_tab().unwrap();
+        let article = url("https://a.example/post");
+        b.handle_event(
+            &mut e,
+            EngineEvent::UrlChanged {
+                tab,
+                url: article.clone(),
+            },
+        );
+        e.calls.clear();
+        b.execute(&mut e, w, Command::ToggleReaderMode);
+        assert!(e.calls.is_empty());
+
+        b.handle_event(
+            &mut e,
+            EngineEvent::LoadStatus {
+                tab,
+                status: LoadStatus::Complete,
+            },
+        );
+        assert_eq!(e.calls, vec![Call::CheckReaderable(tab)]);
+        b.handle_event(
+            &mut e,
+            EngineEvent::Readerable {
+                tab,
+                readerable: true,
+            },
+        );
+        assert!(b.tab(tab).unwrap().readerable);
+
+        b.execute(&mut e, w, Command::ToggleReaderMode);
+        assert_eq!(e.calls.last(), Some(&Call::ShowReader(tab)));
+
+        b.handle_event(
+            &mut e,
+            EngineEvent::LoadStatus {
+                tab,
+                status: LoadStatus::Started,
+            },
+        );
+        assert!(!b.tab(tab).unwrap().readerable);
+        let reader = crate::reader::reader_url(&article);
+        b.handle_event(&mut e, EngineEvent::UrlChanged { tab, url: reader });
+        e.calls.clear();
+        b.handle_event(
+            &mut e,
+            EngineEvent::LoadStatus {
+                tab,
+                status: LoadStatus::Complete,
+            },
+        );
+        assert!(e.calls.is_empty());
+
+        b.execute(&mut e, w, Command::ToggleReaderMode);
+        assert_eq!(e.calls, vec![Call::Load(tab, article)]);
     }
 
     #[test]

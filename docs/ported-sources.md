@@ -13,3 +13,7 @@
 | `crates/core/src/prefs.rs` (разбор `prefs.js`) | Firefox, `modules/libpref/parser` | без `sticky_pref`/`locked` |
 | `crates/core/src/command.rs` | Firefox, `browser/base/content/browser-sets.inc` | имена команд и клавиши |
 | `crates/downloads/src/names.rs` | Firefox, `toolkit/components/downloads/DownloadPaths.sys.mjs` | по образцу |
+| `crates/engine/js/readability/` | mozilla/readability 0.6.0 (Apache 2.0, лицензия в `LICENSE.md` рядом) | убраны комментарии и `module.exports`, код не менялся |
+| `crates/internal-pages/pages/reader.css` | Firefox, `toolkit/themes/shared/aboutReader.css` | без панели настроек, HCM и пользовательских цветов; вложенные правила развёрнуты; тема `auto` через `prefers-color-scheme` |
+| `crates/internal-pages/src/reader.rs` | Firefox, `toolkit/components/reader/AboutReader.sys.mjs`, `ReaderMode.sys.mjs` | разметка статьи, скорость чтения по языкам, `_stripHost`; очистка HTML через ammonia вместо `nsIParserUtils` |
+| `crates/core/src/reader.rs`, `crates/engine/js/readerable.js` | Firefox, `toolkit/components/reader/Readerable.js` | `shouldCheckUri` и список хостов; проверка HTML-документа через `HTMLHtmlElement` |

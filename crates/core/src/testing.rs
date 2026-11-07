@@ -18,6 +18,8 @@ pub enum Call {
     SetVisible(TabId, bool),
     SendInput(TabId, InputEvent),
     Find(TabId, crate::engine::FindRequest),
+    CheckReaderable(TabId),
+    ShowReader(TabId),
     Answer(RequestId, Reply),
 }
 
@@ -69,6 +71,12 @@ impl Engine for FakeEngine {
     }
     fn find(&mut self, tab: TabId, request: crate::engine::FindRequest) {
         self.calls.push(Call::Find(tab, request));
+    }
+    fn check_readerable(&mut self, tab: TabId) {
+        self.calls.push(Call::CheckReaderable(tab));
+    }
+    fn show_reader(&mut self, tab: TabId) {
+        self.calls.push(Call::ShowReader(tab));
     }
     fn answer(&mut self, request: RequestId, reply: Reply) {
         self.calls.push(Call::Answer(request, reply));

@@ -1,0 +1,501 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this file,
+ * You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+:root {
+  --color-gray-0: #fff;
+  --color-gray-30: #cfcfd8;
+  --color-gray-100: #15141a;
+  --color-white: #fff;
+  --color-blue-50: #0060df;
+  --color-black-alpha-20: rgba(0, 0, 0, 0.2);
+  --color-white-alpha-20: rgba(255, 255, 255, 0.2);
+  --border-radius-xsmall: 2px;
+  --border-radius-small: 4px;
+  --font-weight-bold: 600;
+}
+
+:root {
+  --gray-theme-background: var(--color-gray-30);
+  --light-theme-background: #fff;
+  --light-theme-foreground: rgb(21, 20, 26);
+  --dark-theme-background: rgb(28, 27, 34);
+  --dark-theme-foreground: rgb(251, 251, 254);
+  --body-padding: 64px;
+  --font-size: 12;
+  --content-width: 22em;
+  --line-height: 1.6em;
+  --text-alignment: start;
+  --word-spacing: 0;
+  --letter-spacing: 0;
+  --font-weight: normal;
+  --font-family: sans-serif;
+  --block-img-margin-left: unset;
+  --block-img-margin-right: unset;
+}
+
+body {
+  --main-background: var(--light-theme-background);
+  --main-foreground: var(--light-theme-foreground);
+  --primary-color: rgb(0, 97, 224);
+  --toolbar-border: var(--color-black-alpha-20);
+  --toolbar-transparent-border: transparent;
+  --toolbar-button-background: transparent;
+  --toolbar-button-background-hover: rgba(207, 207, 216, 0.66);
+  --toolbar-button-foreground-hover: var(--icon-fill);
+  --toolbar-button-background-active: rgb(207, 207, 216);
+  --toolbar-button-foreground-active: var(--primary-color);
+  --toolbar-button-border: transparent;
+  --toolbar-button-border-hover: var(--toolbar-button-border);
+  --toolbar-button-border-active: var(--toolbar-button-border);
+  --tooltip-background: var(--toolbar-button-background-active);
+  --tooltip-foreground: var(--icon-fill);
+  --tooltip-border: transparent;
+  --popup-background: #fff;
+  --popup-foreground: var(--main-foreground);
+  --popup-border: rgba(0, 0, 0, 0.12);
+  --popup-line: var(--gray-theme-background);
+  --popup-shadow: rgba(49, 49, 49, 0.3);
+  --popup-button-background: rgba(207, 207, 216, 0.33);
+  --popup-button-foreground: var(--main-foreground);
+  --popup-button-selected-foreground: var(--color-gray-0);
+  --popup-button-background-hover: var(--toolbar-button-background-hover);
+  --popup-button-foreground-hover: var(--main-foreground);
+  --popup-button-background-active: var(--toolbar-button-background-active);
+  --popup-button-border: rgba(0, 0, 0, 0.2);
+  --selected-background: rgba(0, 97, 224, 0.3);
+  --outline-focus-color: var(--primary-color);
+  --icon-fill: rgb(91, 91, 102);
+  --icon-disabled-fill: rgba(91, 91, 102, 0.4);
+  --text-selected-background: var(--selected-background);
+  --text-selected-foreground: inherit;
+  --link-foreground: var(--primary-color);
+  --link-selected-background: var(--selected-background);
+  --link-selected-foreground: #333;
+  --visited-link-foreground: #b5007f;
+  --custom-theme-background: var(--color-white);
+  --custom-theme-foreground: var(--color-gray-100);
+  --custom-theme-unvisited-links: var(--color-blue-50);
+  --custom-theme-visited-links: #321c64;
+  --custom-theme-selection-highlight: #ffffcc;
+
+}
+
+body.light {
+  color-scheme: light;
+}
+
+body.sepia {
+  color-scheme: light;
+  --main-background: rgb(244, 236, 216);
+  --main-foreground: rgb(91, 70, 54);
+  --toolbar-border: var(--main-foreground);
+  --icon-fill: var(--main-foreground);
+  --icon-disabled-fill: rgba(91, 70, 54, 0.4);
+}
+
+body.gray {
+  color-scheme: light;
+  --main-background: var(--gray-theme-background);
+  --main-foreground: var(--light-theme-foreground);
+  --toolbar-border: var(--main-foreground);
+  --icon-fill: var(--main-foreground);
+}
+
+body.dark,
+body.contrast {
+  color-scheme: dark;
+  --toolbar-button-background-hover: rgb(82, 82, 94);
+  --toolbar-button-background-active: rgb(91, 91, 102);
+  --popup-background: rgb(66, 65, 77);
+  --popup-button-border: rgba(255, 255, 255, 0.2);
+  --popup-line: rgba(249, 249, 250, 0.1);
+  --popup-button-background: rgb(43, 42, 51);
+  --icon-disabled-fill: rgba(251, 251, 254, 0.4);
+  --link-selected-foreground: #fff;
+  --visited-link-foreground: #e675fd;
+  --selected-background: rgba(0, 221, 255, 0.3);
+  --popup-button-selected-foreground: var(--color-gray-100);
+}
+
+body.dark .moz-reader-block-img,
+body.contrast .moz-reader-block-img {
+  filter: brightness(0.8) contrast(1.2);
+}
+
+body.dark {
+  --main-background: var(--dark-theme-background);
+  --main-foreground: var(--dark-theme-foreground);
+  --primary-color: rgb(0, 221, 255);
+  --toolbar-border: var(--color-white-alpha-20);
+  --icon-fill: rgb(251, 251, 254);
+}
+
+body.contrast {
+  --main-background: #000000;
+  --main-foreground: #fff;
+  --primary-color: #d6b4fd;
+  --link-color: #8080ff;
+  --link-color-hover: #d6b4fd;
+  --toolbar-border: #ffee32;
+  --icon-fill: #ffee32;
+}
+
+body.custom {
+  color-scheme: light;
+  --main-background: var(--custom-theme-background);
+  --main-foreground: var(--custom-theme-foreground);
+  --link-foreground: var(--custom-theme-unvisited-links);
+  --visited-link-foreground: var(--custom-theme-visited-links);
+  --popup-foreground: var(--light-theme-foreground);
+  --popup-button-foreground: var(--light-theme-foreground);
+  --popup-button-foreground-hover: var(--light-theme-foreground);
+  --tooltip-foreground: var(--light-theme-foreground);
+  --toolbar-border: var(--main-foreground);
+  --icon-fill: var(--main-foreground);
+  --icon-disabled-fill: rgba(91, 91, 102, 0.4);
+}
+
+body {
+  margin: 0;
+  padding: var(--body-padding);
+  background-color: var(--main-background);
+  color: var(--main-foreground);
+}
+
+body.loaded {
+  transition:
+    color 0.4s,
+    background-color 0.4s;
+}
+
+*::selection {
+  background-color: var(--text-selected-background);
+  color: var(--text-selected-foreground);
+}
+
+a {
+  border-radius: var(--border-radius-xsmall);
+}
+
+a::selection {
+  background-color: var(--link-selected-background);
+  color: var(--link-selected-foreground);
+}
+
+a:focus-visible {
+  outline: 2px solid var(--outline-focus-color);
+  outline-offset: 1px;
+}
+
+body {
+  font-family: var(--font-family);
+}
+
+body.sans-serif {
+  font-family: sans-serif;
+}
+
+body.serif {
+  font-family: serif;
+}
+
+blockquote {
+  border-inline-start: 2px solid var(--main-foreground) !important;
+}
+
+.reader-message {
+  margin-top: 40px;
+  display: none;
+  text-align: center;
+  width: 100%;
+  font-size: 0.9em;
+}
+
+.top-anchor {
+  position: absolute;
+  top: 0;
+  width: 0;
+  height: 5px;
+  pointer-events: none;
+}
+
+.header {
+  text-align: start;
+  display: none;
+}
+
+.domain {
+  font-size: 0.9em;
+  line-height: 1.48em;
+  padding-bottom: 4px;
+  font-family: sans-serif;
+  text-decoration: underline var(--main-foreground) !important;
+  color: var(--link-foreground);
+}
+
+.header > h1 {
+  font-size: 1.6em;
+  line-height: 1.25em;
+  width: 100%;
+  margin: 30px 0;
+  padding: 0;
+}
+
+.header > .credits {
+  font-size: 0.9em;
+  line-height: 1.48em;
+  margin: 0 0 10px;
+  padding: 0;
+  font-style: italic;
+}
+
+.header > .meta-data {
+  font-size: 0.65em;
+  margin: 0 0 15px;
+}
+
+.reader-estimated-time {
+  text-align: match-parent;
+}
+
+.container {
+  margin: 0 auto;
+  font-size: var(--font-size);
+  max-width: var(--content-width);
+  line-height: var(--line-height);
+  text-align: var(--text-alignment);
+  word-spacing: var(--word-spacing);
+  letter-spacing: var(--letter-spacing);
+  font-weight: var(--font-weight);
+}
+
+.container .header {
+  text-align: var(--text-alignment);
+}
+
+pre {
+  font-family: monospace;
+}
+
+.plain-text-doc pre {
+  font-family: inherit;
+}
+
+.moz-reader-content {
+  display: none;
+  font-size: 1em;
+}
+
+@media print {
+  .moz-reader-content p,
+  .moz-reader-content code,
+  .moz-reader-content pre,
+  .moz-reader-content blockquote,
+  .moz-reader-content ul,
+  .moz-reader-content ol,
+  .moz-reader-content li,
+  .moz-reader-content figure,
+  .moz-reader-content .wp-caption {
+    margin: 0 0 10px !important;
+    padding: 0 !important;
+  }
+}
+
+.moz-reader-content h1,
+.moz-reader-content h2,
+.moz-reader-content h3 {
+  font-weight: var(--font-weight-bold);
+}
+
+.moz-reader-content h1 {
+  font-size: 1.6em;
+  line-height: 1.25em;
+}
+
+.moz-reader-content h2 {
+  font-size: 1.2em;
+  line-height: 1.51em;
+}
+
+.moz-reader-content h3 {
+  font-size: 1em;
+  line-height: 1.66em;
+}
+
+.moz-reader-content a:link {
+  text-decoration: underline;
+  font-weight: normal;
+}
+
+.moz-reader-content a:link,
+.moz-reader-content a:link:hover,
+.moz-reader-content a:link:active {
+  color: var(--link-foreground);
+}
+
+.moz-reader-content a:visited {
+  color: var(--visited-link-foreground);
+}
+
+.moz-reader-content * {
+  max-width: 100%;
+  height: auto;
+}
+
+.moz-reader-content p,
+.moz-reader-content p,
+.moz-reader-content code,
+.moz-reader-content pre,
+.moz-reader-content blockquote,
+.moz-reader-content ul,
+.moz-reader-content ol,
+.moz-reader-content li,
+.moz-reader-content figure,
+.moz-reader-content .wp-caption {
+  margin: -10px -10px calc(8px + var(--line-height) * 0.4);
+  padding: 10px;
+  border-radius: var(--border-radius-small);
+}
+
+.moz-reader-content li {
+  margin-bottom: 0;
+}
+
+.moz-reader-content li > ul,
+.moz-reader-content li > ol {
+  margin-bottom: -10px;
+}
+
+.moz-reader-content p > img:only-child,
+.moz-reader-content p > a:only-child > img:only-child,
+.moz-reader-content .wp-caption img,
+.moz-reader-content figure img {
+  display: block;
+}
+
+.moz-reader-content img[moz-reader-center] {
+  margin-inline: auto;
+}
+
+.moz-reader-content img:not([moz-reader-center]) {
+  margin-left: var(--block-img-margin-left);
+  margin-right: var(--block-img-margin-right);
+}
+
+.moz-reader-content .caption,
+.moz-reader-content .wp-caption-text,
+.moz-reader-content figcaption {
+  font-size: 0.9em;
+  line-height: 1.48em;
+  font-style: italic;
+}
+
+.moz-reader-content pre {
+  white-space: pre-wrap;
+}
+
+.moz-reader-content blockquote {
+  padding: 0;
+  padding-inline-start: 16px;
+}
+
+.moz-reader-content ul,
+.moz-reader-content ol {
+  padding: 0;
+}
+
+.moz-reader-content ul {
+  padding-inline-start: 30px;
+  list-style: disc;
+}
+
+.moz-reader-content ol {
+  padding-inline-start: 30px;
+}
+
+table,
+th,
+td {
+  border: 1px solid currentColor;
+  border-collapse: collapse;
+  padding: 6px;
+  vertical-align: top;
+}
+
+table {
+  margin: 5px;
+}
+
+.moz-reader-content .visually-hidden,
+.moz-reader-content .visuallyhidden,
+.moz-reader-content .sr-only {
+  display: inline-block;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  padding: 0;
+  border-width: 0;
+}
+
+.moz-reader-content .hidden,
+.moz-reader-content .invisible {
+  display: none;
+}
+
+.moz-reader-content img.wp-smiley,
+.moz-reader-content img.emoji {
+  display: inline-block;
+  border-width: 0;
+
+  width: 1em;
+  margin: 0 0.07em;
+  padding: 0;
+}
+
+.reader-show-element {
+  display: initial;
+}
+
+.moz-reader-block-img:not(:last-child) {
+  margin-block-end: 12px;
+}
+
+.moz-reader-wide-table {
+  overflow-x: auto;
+  display: block;
+}
+
+pre code {
+  background-color: var(--main-background);
+  border: 1px solid var(--main-foreground);
+  display: block;
+  overflow: auto;
+}
+
+@media (prefers-color-scheme: dark) {
+  body.auto {
+    color-scheme: dark;
+    --toolbar-button-background-hover: rgb(82, 82, 94);
+    --toolbar-button-background-active: rgb(91, 91, 102);
+    --popup-background: rgb(66, 65, 77);
+    --popup-button-border: rgba(255, 255, 255, 0.2);
+    --popup-line: rgba(249, 249, 250, 0.1);
+    --popup-button-background: rgb(43, 42, 51);
+    --icon-disabled-fill: rgba(251, 251, 254, 0.4);
+    --link-selected-foreground: #fff;
+    --visited-link-foreground: #e675fd;
+    --selected-background: rgba(0, 221, 255, 0.3);
+    --popup-button-selected-foreground: var(--color-gray-100);
+    --main-background: var(--dark-theme-background);
+    --main-foreground: var(--dark-theme-foreground);
+    --primary-color: rgb(0, 221, 255);
+    --toolbar-border: var(--color-white-alpha-20);
+    --icon-fill: rgb(251, 251, 254);
+  }
+
+  body.auto .moz-reader-block-img {
+    filter: brightness(0.8) contrast(1.2);
+  }
+}

@@ -3,6 +3,9 @@ use klin_shared::Url;
 const INITIAL_PAGES: &[&str] = &["about:newtab", "about:home", "about:blank"];
 
 pub fn display_url(url: &Url) -> String {
+    if let Some(original) = klin_core::reader::original_url(url) {
+        return display_url(&original);
+    }
     let s = url.as_str();
     if INITIAL_PAGES.contains(&s) {
         return String::new();
@@ -55,5 +58,9 @@ mod tests {
         assert_eq!(show("about:newtab"), "");
         assert_eq!(show("about:config"), "about:config");
         assert_eq!(show("file:///C:/x.html"), "file:///C:/x.html");
+        assert_eq!(
+            show("about:reader?url=https%3A%2F%2Fexample.com%2Fa"),
+            "example.com/a"
+        );
     }
 }
