@@ -1,3 +1,4 @@
+mod bookmarks_bar;
 mod downloads;
 mod favicons;
 mod findbar;
@@ -40,6 +41,10 @@ pub enum Action {
         request: klin_core::FindRequest,
     },
     SetPref(String, klin_core::prefs::PrefValue),
+    OpenBookmark {
+        url: klin_shared::Url,
+        new_tab: bool,
+    },
     ResetPref(String),
     ClearHistory,
     ImportFromFirefox,
@@ -84,6 +89,7 @@ pub struct BrowserUi {
     find_bars: findbar::FindBars,
     notice: Option<String>,
     settings: settings_ui::SettingsState,
+    bookmarks_toolbar: Vec<klin_shared::bookmarks::BookmarkNode>,
 }
 
 fn url_bar_id() -> egui::Id {
@@ -107,6 +113,10 @@ impl BrowserUi {
             self.suggestions_query = query.to_owned();
             self.suggestion_selected = None;
         }
+    }
+
+    pub fn set_bookmarks_toolbar(&mut self, items: Vec<klin_shared::bookmarks::BookmarkNode>) {
+        self.bookmarks_toolbar = items;
     }
 
     pub fn set_notice(&mut self, text: String) {
@@ -165,6 +175,12 @@ impl BrowserUi {
         egui::Panel::top("klin-nav").show(root, |ui| {
             self.nav_bar(ui, selected, browser.downloads(), &mut actions);
         });
+        let toolbar_setting = prefs.bookmarks_toolbar();
+        if bookmarks_bar::visible(&toolbar_setting, selected.and_then(|t| t.url.as_ref())) {
+            egui::Panel::top("klin-bookmarks-bar").show(root, |ui| {
+                bookmarks_bar::show(ui, &self.bookmarks_toolbar, &mut actions);
+            });
+        }
 
         if let Some(text) = self.notice.clone() {
             egui::Panel::top("klin-notice").show(root, |ui| {

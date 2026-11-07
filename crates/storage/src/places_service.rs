@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::JoinHandle;
 
+use klin_shared::bookmarks::BookmarkNode;
 use klin_shared::import::{BookmarkRoot, ImportedBookmark, ImportedPlace, ImportedRoot};
 use url::Url;
 
@@ -47,6 +48,9 @@ pub struct ImportStats {
 
 enum Message {
     ClearHistory,
+    Toolbar {
+        reply: Callback<Vec<BookmarkNode>>,
+    },
     Import {
         places: Vec<ImportedPlace>,
         bookmarks: Vec<ImportedRoot>,
@@ -171,6 +175,12 @@ impl PlacesService {
         });
     }
 
+    pub fn bookmarks_toolbar(&self, reply: impl FnOnce(Vec<BookmarkNode>) + Send + 'static) {
+        self.send(Message::Toolbar {
+            reply: Box::new(reply),
+        });
+    }
+
     pub fn clear_history(&self) {
         self.send(Message::ClearHistory);
     }
@@ -209,6 +219,7 @@ fn run(path: PathBuf, rx: Receiver<Message>) {
                     Message::IsBookmarked { reply, .. } => reply(false),
                     Message::RecentHistory { reply, .. } => reply(Vec::new()),
                     Message::Import { reply, .. } => reply(ImportStats::default()),
+                    Message::Toolbar { reply } => reply(Vec::new()),
                     _ => {}
                 }
             }
@@ -311,6 +322,23 @@ fn handle(db: &mut PlacesDb, message: Message) -> crate::places::Result<()> {
             reply(stats);
         }
         Message::ClearHistory => history::delete_everything(db)?,
+        Message::Toolbar { reply } => {
+            let tree = fetch::fetch_tree_with_depth(
+                db,
+                &BookmarkRootGuid::Toolbar.as_guid(),
+                &bookmarks::json_tree::FetchDepth::Deepest,
+            )?;
+            let nodes = match tree {
+                Some(fetch::Item::Folder { f }) => f
+                    .child_nodes
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(to_node)
+                    .collect(),
+                _ => Vec::new(),
+            };
+            reply(nodes);
+        }
         Message::RecentHistory { limit, reply } => {
             let infos = history::get_visit_infos(
                 db,
@@ -332,6 +360,28 @@ fn handle(db: &mut PlacesDb, message: Message) -> crate::places::Result<()> {
         }
     }
     Ok(())
+}
+
+fn to_node(item: fetch::Item) -> Option<BookmarkNode> {
+    Some(match item {
+        fetch::Item::Bookmark { b } => {
+            let title = b
+                .title
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| b.url.to_string());
+            BookmarkNode::Bookmark { url: b.url, title }
+        }
+        fetch::Item::Folder { f } => BookmarkNode::Folder {
+            title: f.title.unwrap_or_default(),
+            children: f
+                .child_nodes
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(to_node)
+                .collect(),
+        },
+        fetch::Item::Separator { .. } => BookmarkNode::Separator,
+    })
 }
 
 fn import_history(
@@ -558,5 +608,10 @@ mod tests {
         ));
         let again = wait(|r| places.import(Vec::new(), roots(), r));
         assert_eq!(again.bookmarks, 0);
+        let toolbar = wait(|r| places.bookmarks_toolbar(r));
+        assert_eq!(toolbar.len(), 2);
+        assert!(
+            matches!(&toolbar[1], BookmarkNode::Folder { title, children } if title == "Rust" && children.len() == 1)
+        );
     }
 }

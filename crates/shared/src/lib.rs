@@ -33,6 +33,7 @@ id_type!(TabId, "tab#");
 id_type!(RequestId, "request#");
 id_type!(DownloadId, "download#");
 
+pub mod bookmarks;
 pub mod download;
 pub mod import;
 pub mod session;

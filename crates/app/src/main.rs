@@ -13,6 +13,7 @@ use klin_core::{
 use klin_downloads::{DownloadRequest, DownloadService, default_download_dir};
 use klin_engine::{EngineConfig, ServoEngine, Waker};
 use klin_profile::{Profile, ProfileError};
+use klin_shared::bookmarks::BookmarkNode;
 use klin_shared::download::DownloadEvent;
 use klin_shared::import::ImportedData;
 use klin_shared::session::Session;
@@ -176,6 +177,8 @@ struct Running {
     bookmark_tx: Sender<(Url, bool)>,
     history_rx: Receiver<(WindowId, Vec<klin_ui::HistoryItem>)>,
     history_tx: Sender<(WindowId, Vec<klin_ui::HistoryItem>)>,
+    toolbar_rx: Receiver<Vec<BookmarkNode>>,
+    toolbar_tx: Sender<Vec<BookmarkNode>>,
     import_rx: Receiver<Result<ImportedData, String>>,
     import_tx: Sender<Result<ImportedData, String>>,
     import_done_rx: Receiver<(ImportStats, usize)>,
@@ -327,6 +330,7 @@ impl Running {
         let (bookmark_tx, bookmark_rx) = channel();
         let (history_tx, history_rx) = channel();
         let (import_tx, import_rx) = channel();
+        let (toolbar_tx, toolbar_rx) = channel();
         let (import_done_tx, import_done_rx) = channel();
         let mut running = Self {
             proxy,
@@ -347,6 +351,8 @@ impl Running {
             history_tx,
             import_rx,
             import_tx,
+            toolbar_rx,
+            toolbar_tx,
             import_done_rx,
             import_done_tx,
             browser: Browser::new(),
@@ -362,6 +368,7 @@ impl Running {
             _profile: profile,
         };
         running.apply_prefs();
+        running.refresh_toolbar();
         match startup {
             StartupSession::Restore { session, .. } => {
                 for state in &session.windows {
@@ -515,6 +522,12 @@ impl Running {
                 w.window.request_redraw();
             }
         }
+        while let Ok(items) = self.toolbar_rx.try_recv() {
+            for w in &mut self.windows {
+                w.ui.set_bookmarks_toolbar(items.clone());
+                w.window.request_redraw();
+            }
+        }
         while let Ok(result) = self.import_rx.try_recv() {
             match result {
                 Ok(data) => {
@@ -531,6 +544,7 @@ impl Running {
             }
         }
         while let Ok((stats, cookies)) = self.import_done_rx.try_recv() {
+            self.refresh_toolbar();
             self.notify_all(format!(
                 "Импортировано из Firefox: {} истории ({}), {}, {}.",
                 plural(stats.pages, "страница", "страницы", "страниц"),
@@ -711,6 +725,16 @@ impl Running {
                 self.browser
                     .open_url(&mut self.engine, id, &url, VisitKind::Typed);
             }
+            Action::OpenBookmark {
+                url,
+                new_tab: false,
+            } => self
+                .browser
+                .open_url(&mut self.engine, id, &url, VisitKind::Bookmark),
+            Action::OpenBookmark { url, new_tab: true } => {
+                self.browser
+                    .open_url_in_new_tab(&mut self.engine, id, url, VisitKind::Bookmark)
+            }
             Action::OpenUrl(url) => {
                 self.browser
                     .open_url(&mut self.engine, id, &url, VisitKind::Link)
@@ -831,7 +855,25 @@ impl Running {
                         let _ = proxy.send_event(Wake);
                     });
                 }
-                UiEffect::AddBookmark { url, title } => self.places.add_bookmark(url, title),
+                UiEffect::AddBookmark { url, title } => {
+                    self.places.add_bookmark(url, title);
+                    self.refresh_toolbar();
+                }
+                UiEffect::ToggleBookmarksToolbar => {
+                    let next = if self.prefs.bookmarks_toolbar() == "always" {
+                        "never"
+                    } else {
+                        "always"
+                    };
+                    self.prefs.set(
+                        klin_core::prefs::BOOKMARKS_TOOLBAR,
+                        klin_core::prefs::PrefValue::String(next.into()),
+                    );
+                    self.prefs_changed();
+                    for w in &self.windows {
+                        w.window.request_redraw();
+                    }
+                }
                 UiEffect::RemoveBookmark(url) => self.remove_bookmark(url),
                 UiEffect::ShowBookmarkPanel(window) => {
                     if let Some(w) = self.win_mut(window) {
@@ -956,8 +998,18 @@ impl Running {
         }
     }
 
+    fn refresh_toolbar(&self) {
+        let tx = self.toolbar_tx.clone();
+        let proxy = self.proxy.clone();
+        self.places.bookmarks_toolbar(move |items| {
+            let _ = tx.send(items);
+            let _ = proxy.send_event(Wake);
+        });
+    }
+
     fn remove_bookmark(&mut self, url: Url) {
         self.places.remove_bookmarks(url.clone());
+        self.refresh_toolbar();
         self.browser.set_bookmarked(&url, false);
     }
 

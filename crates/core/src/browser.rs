@@ -85,6 +85,7 @@ pub enum UiEffect {
     },
     ToggleDownloadsPanel(WindowId),
     Quit,
+    ToggleBookmarksToolbar,
     RecordVisit {
         url: Url,
         kind: VisitKind,
@@ -554,6 +555,20 @@ impl Browser {
         }
     }
 
+    pub fn open_url_in_new_tab(
+        &mut self,
+        engine: &mut dyn Engine,
+        window: WindowId,
+        url: Url,
+        kind: VisitKind,
+    ) {
+        if let Some(tab) = self.open_tab(engine, window, url, None, true)
+            && let Some(t) = self.tabs.get_mut(&tab)
+        {
+            t.next_visit = Some(kind);
+        }
+    }
+
     pub fn set_bookmarked(&mut self, url: &Url, bookmarked: bool) {
         for tab in self.tabs.values_mut() {
             if tab.url.as_ref() == Some(url) {
@@ -619,6 +634,7 @@ impl Browser {
             NextTab | PreviousTab | SelectLastTab => {}
             ToggleHistorySidebar => return vec![UiEffect::ToggleHistorySidebar(window)],
             Quit => return vec![UiEffect::Quit],
+            ToggleBookmarksToolbar => return vec![UiEffect::ToggleBookmarksToolbar],
             Find => return vec![UiEffect::ShowFindBar(window)],
             FindAgain => {
                 return vec![UiEffect::FindAgain {
@@ -651,11 +667,9 @@ impl Browser {
                 effects.push(UiEffect::ShowBookmarkPanel(window));
                 return effects;
             }
-            ToggleBookmarksToolbar
-            | ShowAllBookmarks
-            | ShowAllHistory
-            | ToggleReaderMode
-            | ToggleFullScreen => return vec![UiEffect::NotImplemented(command)],
+            ShowAllBookmarks | ShowAllHistory | ToggleReaderMode | ToggleFullScreen => {
+                return vec![UiEffect::NotImplemented(command)];
+            }
         }
         Vec::new()
     }

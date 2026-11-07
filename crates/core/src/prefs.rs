@@ -22,12 +22,15 @@ pub const HISTORY_ENABLED: &str = "places.history.enabled";
 
 pub const DOWNLOAD_DIR: &str = "browser.download.dir";
 
+pub const BOOKMARKS_TOOLBAR: &str = "browser.toolbars.bookmarks.visibility";
+
 pub const KNOWN: &[(&str, PrefDefault)] = &[
     (STARTUP_PAGE, PrefDefault::Int(1)),
     (HOMEPAGE_PREF, PrefDefault::String(HOMEPAGE)),
     (RESUME_FROM_CRASH, PrefDefault::Bool(true)),
     (HISTORY_ENABLED, PrefDefault::Bool(true)),
     (DOWNLOAD_DIR, PrefDefault::String("")),
+    (BOOKMARKS_TOOLBAR, PrefDefault::String("newtab")),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -127,6 +130,10 @@ impl UserPrefs {
 
     pub fn homepage(&self) -> String {
         self.string(HOMEPAGE_PREF, HOMEPAGE)
+    }
+
+    pub fn bookmarks_toolbar(&self) -> String {
+        self.string(BOOKMARKS_TOOLBAR, "newtab")
     }
 
     pub fn history_enabled(&self) -> bool {
