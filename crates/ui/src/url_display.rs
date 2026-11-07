@@ -29,6 +29,16 @@ pub fn display_url(url: &Url) -> String {
     }
 }
 
+pub(crate) fn shorten(url: &str) -> String {
+    const MAX: usize = 60;
+    if url.chars().count() <= MAX {
+        return url.to_owned();
+    }
+    let mut out: String = url.chars().take(MAX - 1).collect();
+    out.push('…');
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

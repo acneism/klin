@@ -18,7 +18,8 @@ shortcuts, data formats, settings.
 > `browser.startup.page = 3` in `prefs.js`/`user.js`. Find in page (Ctrl+F, F3) works through
 > the selection API. `klin -migration` imports history, bookmarks and cookies from the default
 > Firefox profile. Settings: the ≡ menu → «Настройки» (about:preferences) and about:config,
-> stored in `prefs.js` like Firefox. Not ready for everyday use.
+> stored in `prefs.js` like Firefox. The Library (Ctrl+Shift+H, Ctrl+Shift+O) shows history,
+> downloads and all bookmark folders with search and deletion. Not ready for everyday use.
 
 The specification and architecture are in [docs/spec.md](docs/spec.md) (in Russian).
 

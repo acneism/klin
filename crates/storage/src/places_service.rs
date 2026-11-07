@@ -48,6 +48,15 @@ pub struct ImportStats {
 
 enum Message {
     ClearHistory,
+    Tree {
+        reply: Callback<Vec<(BookmarkRoot, Vec<BookmarkNode>)>>,
+    },
+    DeleteBookmark {
+        id: String,
+    },
+    DeletePage {
+        url: Url,
+    },
     Toolbar {
         reply: Callback<Vec<BookmarkNode>>,
     },
@@ -181,6 +190,23 @@ impl PlacesService {
         });
     }
 
+    pub fn bookmarks_tree(
+        &self,
+        reply: impl FnOnce(Vec<(BookmarkRoot, Vec<BookmarkNode>)>) + Send + 'static,
+    ) {
+        self.send(Message::Tree {
+            reply: Box::new(reply),
+        });
+    }
+
+    pub fn delete_bookmark(&self, id: String) {
+        self.send(Message::DeleteBookmark { id });
+    }
+
+    pub fn delete_page(&self, url: Url) {
+        self.send(Message::DeletePage { url });
+    }
+
     pub fn clear_history(&self) {
         self.send(Message::ClearHistory);
     }
@@ -220,6 +246,7 @@ fn run(path: PathBuf, rx: Receiver<Message>) {
                     Message::RecentHistory { reply, .. } => reply(Vec::new()),
                     Message::Import { reply, .. } => reply(ImportStats::default()),
                     Message::Toolbar { reply } => reply(Vec::new()),
+                    Message::Tree { reply } => reply(Vec::new()),
                     _ => {}
                 }
             }
@@ -322,6 +349,40 @@ fn handle(db: &mut PlacesDb, message: Message) -> crate::places::Result<()> {
             reply(stats);
         }
         Message::ClearHistory => history::delete_everything(db)?,
+        Message::Tree { reply } => {
+            let mut roots = Vec::new();
+            for (root, guid) in [
+                (BookmarkRoot::Toolbar, BookmarkRootGuid::Toolbar),
+                (BookmarkRoot::Menu, BookmarkRootGuid::Menu),
+                (BookmarkRoot::Unfiled, BookmarkRootGuid::Unfiled),
+                (BookmarkRoot::Mobile, BookmarkRootGuid::Mobile),
+            ] {
+                let tree = fetch::fetch_tree_with_depth(
+                    db,
+                    &guid.as_guid(),
+                    &bookmarks::json_tree::FetchDepth::Deepest,
+                )?;
+                let nodes = match tree {
+                    Some(fetch::Item::Folder { f }) => f
+                        .child_nodes
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter_map(to_node)
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                roots.push((root, nodes));
+            }
+            reply(roots);
+        }
+        Message::DeleteBookmark { id } => {
+            bookmarks::delete_bookmark(db, &crate::support::guid::Guid::from(id.as_str()))?;
+        }
+        Message::DeletePage { url } => {
+            if let Some(guid) = history::url_to_guid(db, &url)? {
+                history::delete_visits_for(db, &guid)?;
+            }
+        }
         Message::Toolbar { reply } => {
             let tree = fetch::fetch_tree_with_depth(
                 db,
@@ -369,9 +430,14 @@ fn to_node(item: fetch::Item) -> Option<BookmarkNode> {
                 .title
                 .filter(|t| !t.is_empty())
                 .unwrap_or_else(|| b.url.to_string());
-            BookmarkNode::Bookmark { url: b.url, title }
+            BookmarkNode::Bookmark {
+                id: b.guid.to_string(),
+                url: b.url,
+                title,
+            }
         }
         fetch::Item::Folder { f } => BookmarkNode::Folder {
+            id: f.guid.to_string(),
             title: f.title.unwrap_or_default(),
             children: f
                 .child_nodes
@@ -611,7 +677,16 @@ mod tests {
         let toolbar = wait(|r| places.bookmarks_toolbar(r));
         assert_eq!(toolbar.len(), 2);
         assert!(
-            matches!(&toolbar[1], BookmarkNode::Folder { title, children } if title == "Rust" && children.len() == 1)
+            matches!(&toolbar[1], BookmarkNode::Folder { title, children, .. } if title == "Rust" && children.len() == 1)
         );
+        let tree = wait(|r| places.bookmarks_tree(r));
+        assert_eq!(tree[0].0, BookmarkRoot::Toolbar);
+        assert_eq!(tree[0].1.len(), 2);
+        if let BookmarkNode::Bookmark { id, .. } = &toolbar[0] {
+            places.delete_bookmark(id.clone());
+        }
+        assert!(!wait(|r| places.is_bookmarked(url("https://servo.org/"), r)));
+        places.delete_page(url("https://www.mozilla.org/"));
+        assert!(wait(|r| places.recent_history(10, r)).is_empty());
     }
 }

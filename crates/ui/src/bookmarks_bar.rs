@@ -38,7 +38,7 @@ pub(crate) fn show(ui: &mut egui::Ui, items: &[BookmarkNode], actions: &mut Vec<
         }
         for item in items {
             match item {
-                BookmarkNode::Bookmark { url, title } => {
+                BookmarkNode::Bookmark { url, title, .. } => {
                     let response = ui
                         .add(egui::Button::new(RichText::new(short(title))).frame(false))
                         .on_hover_text(format!("{title}\n{url}"));
@@ -55,7 +55,9 @@ pub(crate) fn show(ui: &mut egui::Ui, items: &[BookmarkNode], actions: &mut Vec<
                         });
                     }
                 }
-                BookmarkNode::Folder { title, children } => {
+                BookmarkNode::Folder {
+                    title, children, ..
+                } => {
                     ui.menu_button(RichText::new(format!("{} ▾", short(title))), |ui| {
                         folder_menu(ui, children, actions);
                     });
@@ -76,7 +78,7 @@ fn folder_menu(ui: &mut egui::Ui, items: &[BookmarkNode], actions: &mut Vec<Acti
     }
     for item in items {
         match item {
-            BookmarkNode::Bookmark { url, title } => {
+            BookmarkNode::Bookmark { url, title, .. } => {
                 let response = ui
                     .add(
                         egui::Button::new(title)
@@ -99,7 +101,9 @@ fn folder_menu(ui: &mut egui::Ui, items: &[BookmarkNode], actions: &mut Vec<Acti
                     ui.close();
                 }
             }
-            BookmarkNode::Folder { title, children } => {
+            BookmarkNode::Folder {
+                title, children, ..
+            } => {
                 ui.menu_button(title, |ui| folder_menu(ui, children, actions));
             }
             BookmarkNode::Separator => {

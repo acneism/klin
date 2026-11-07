@@ -3,6 +3,7 @@ mod downloads;
 mod favicons;
 mod findbar;
 mod icons;
+mod library_ui;
 mod places_ui;
 mod requests;
 mod settings_ui;
@@ -14,6 +15,7 @@ use klin_core::browser::Tab;
 use klin_core::{Browser, Command};
 use klin_shared::{LoadStatus, TabId, WindowId};
 
+pub use library_ui::LibrarySection;
 pub use places_ui::{HistoryItem, Suggestion};
 pub use url_display::display_url;
 
@@ -41,6 +43,9 @@ pub enum Action {
         request: klin_core::FindRequest,
     },
     SetPref(String, klin_core::prefs::PrefValue),
+    LoadLibrary,
+    DeleteBookmark(String),
+    DeletePage(klin_shared::Url),
     OpenBookmark {
         url: klin_shared::Url,
         new_tab: bool,
@@ -90,6 +95,11 @@ pub struct BrowserUi {
     notice: Option<String>,
     settings: settings_ui::SettingsState,
     bookmarks_toolbar: Vec<klin_shared::bookmarks::BookmarkNode>,
+    library: library_ui::LibraryState,
+    bookmarks_tree: Vec<(
+        klin_shared::import::BookmarkRoot,
+        Vec<klin_shared::bookmarks::BookmarkNode>,
+    )>,
 }
 
 fn url_bar_id() -> egui::Id {
@@ -113,6 +123,21 @@ impl BrowserUi {
             self.suggestions_query = query.to_owned();
             self.suggestion_selected = None;
         }
+    }
+
+    pub fn show_library(&mut self, section: LibrarySection) {
+        self.library.section = section;
+        self.library.requested = false;
+    }
+
+    pub fn set_bookmarks_tree(
+        &mut self,
+        tree: Vec<(
+            klin_shared::import::BookmarkRoot,
+            Vec<klin_shared::bookmarks::BookmarkNode>,
+        )>,
+    ) {
+        self.bookmarks_tree = tree;
     }
 
     pub fn set_bookmarks_toolbar(&mut self, items: Vec<klin_shared::bookmarks::BookmarkNode>) {
@@ -244,13 +269,22 @@ impl BrowserUi {
                     .and_then(|t| t.url.as_ref())
                     .map(|u| u.as_str())
                     .filter(|u| {
-                        *u == settings_ui::PREFERENCES_URL || *u == settings_ui::CONFIG_URL
+                        *u == settings_ui::PREFERENCES_URL
+                            || *u == settings_ui::CONFIG_URL
+                            || *u == library_ui::LIBRARY_URL
                     });
                 if let Some(url) = internal {
                     native_page = true;
                     ui.painter()
                         .rect_filled(page_rect, 0.0, ui.visuals().panel_fill);
-                    if url == settings_ui::PREFERENCES_URL {
+                    if url == library_ui::LIBRARY_URL {
+                        let data = library_ui::LibraryData {
+                            history: &self.history,
+                            bookmarks: &self.bookmarks_tree,
+                            downloads: browser.downloads(),
+                        };
+                        library_ui::show(ui, &mut self.library, data, &mut actions);
+                    } else if url == settings_ui::PREFERENCES_URL {
                         settings_ui::preferences_page(ui, prefs, &mut self.settings, &mut actions);
                     } else {
                         settings_ui::config_page(ui, prefs, &mut self.settings, &mut actions);

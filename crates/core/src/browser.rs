@@ -86,6 +86,10 @@ pub enum UiEffect {
     ToggleDownloadsPanel(WindowId),
     Quit,
     ToggleBookmarksToolbar,
+    ShowLibrary {
+        window: WindowId,
+        bookmarks: bool,
+    },
     RecordVisit {
         url: Url,
         kind: VisitKind,
@@ -635,6 +639,18 @@ impl Browser {
             ToggleHistorySidebar => return vec![UiEffect::ToggleHistorySidebar(window)],
             Quit => return vec![UiEffect::Quit],
             ToggleBookmarksToolbar => return vec![UiEffect::ToggleBookmarksToolbar],
+            ShowAllHistory => {
+                return vec![UiEffect::ShowLibrary {
+                    window,
+                    bookmarks: false,
+                }];
+            }
+            ShowAllBookmarks => {
+                return vec![UiEffect::ShowLibrary {
+                    window,
+                    bookmarks: true,
+                }];
+            }
             Find => return vec![UiEffect::ShowFindBar(window)],
             FindAgain => {
                 return vec![UiEffect::FindAgain {
@@ -667,7 +683,7 @@ impl Browser {
                 effects.push(UiEffect::ShowBookmarkPanel(window));
                 return effects;
             }
-            ShowAllBookmarks | ShowAllHistory | ToggleReaderMode | ToggleFullScreen => {
+            ToggleReaderMode | ToggleFullScreen => {
                 return vec![UiEffect::NotImplemented(command)];
             }
         }

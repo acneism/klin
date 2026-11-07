@@ -5,6 +5,7 @@ pub fn page(name: &str) -> Option<(&'static str, &'static [u8])> {
         "newtab" | "home" | "blank" => Some(("text/html", include_bytes!("../pages/newtab.html"))),
         "preferences" => Some(("text/html", include_bytes!("../pages/preferences.html"))),
         "config" => Some(("text/html", include_bytes!("../pages/config.html"))),
+        "library" => Some(("text/html", include_bytes!("../pages/library.html"))),
         _ => None,
     }
 }

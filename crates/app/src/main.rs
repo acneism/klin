@@ -14,6 +14,8 @@ use klin_downloads::{DownloadRequest, DownloadService, default_download_dir};
 use klin_engine::{EngineConfig, ServoEngine, Waker};
 use klin_profile::{Profile, ProfileError};
 use klin_shared::bookmarks::BookmarkNode;
+
+type BookmarkTree = Vec<(klin_shared::import::BookmarkRoot, Vec<BookmarkNode>)>;
 use klin_shared::download::DownloadEvent;
 use klin_shared::import::ImportedData;
 use klin_shared::session::Session;
@@ -177,6 +179,8 @@ struct Running {
     bookmark_tx: Sender<(Url, bool)>,
     history_rx: Receiver<(WindowId, Vec<klin_ui::HistoryItem>)>,
     history_tx: Sender<(WindowId, Vec<klin_ui::HistoryItem>)>,
+    tree_rx: Receiver<(WindowId, BookmarkTree)>,
+    tree_tx: Sender<(WindowId, BookmarkTree)>,
     toolbar_rx: Receiver<Vec<BookmarkNode>>,
     toolbar_tx: Sender<Vec<BookmarkNode>>,
     import_rx: Receiver<Result<ImportedData, String>>,
@@ -331,6 +335,7 @@ impl Running {
         let (history_tx, history_rx) = channel();
         let (import_tx, import_rx) = channel();
         let (toolbar_tx, toolbar_rx) = channel();
+        let (tree_tx, tree_rx) = channel();
         let (import_done_tx, import_done_rx) = channel();
         let mut running = Self {
             proxy,
@@ -353,6 +358,8 @@ impl Running {
             import_tx,
             toolbar_rx,
             toolbar_tx,
+            tree_rx,
+            tree_tx,
             import_done_rx,
             import_done_tx,
             browser: Browser::new(),
@@ -519,6 +526,12 @@ impl Running {
         while let Ok((window, items)) = self.history_rx.try_recv() {
             if let Some(w) = self.win_mut(window) {
                 w.ui.set_history(items);
+                w.window.request_redraw();
+            }
+        }
+        while let Ok((window, tree)) = self.tree_rx.try_recv() {
+            if let Some(w) = self.win_mut(window) {
+                w.ui.set_bookmarks_tree(tree);
                 w.window.request_redraw();
             }
         }
@@ -699,6 +712,20 @@ impl Running {
                 }
             }
             Action::ImportFromFirefox => self.start_firefox_import(),
+            Action::LoadLibrary => {
+                self.load_history(id);
+                self.load_tree(id);
+            }
+            Action::DeleteBookmark(bookmark) => {
+                self.places.delete_bookmark(bookmark);
+                self.refresh_toolbar();
+                self.load_tree(id);
+                self.recheck_bookmarks();
+            }
+            Action::DeletePage(url) => {
+                self.places.delete_page(url);
+                self.load_history(id);
+            }
             Action::OpenInternal(url) => {
                 if let Ok(url) = Url::parse(url) {
                     self.browser.open_or_select(&mut self.engine, id, url);
@@ -859,6 +886,22 @@ impl Running {
                     self.places.add_bookmark(url, title);
                     self.refresh_toolbar();
                 }
+                UiEffect::ShowLibrary { window, bookmarks } => {
+                    if let Ok(url) = Url::parse("about:library") {
+                        self.browser.open_or_select(&mut self.engine, window, url);
+                    }
+                    if let Some(w) = self.win_mut(window) {
+                        let section = if bookmarks {
+                            klin_ui::LibrarySection::Bookmarks(
+                                klin_shared::import::BookmarkRoot::Toolbar,
+                            )
+                        } else {
+                            klin_ui::LibrarySection::History
+                        };
+                        w.ui.show_library(section);
+                        w.window.request_redraw();
+                    }
+                }
                 UiEffect::ToggleBookmarksToolbar => {
                     let next = if self.prefs.bookmarks_toolbar() == "always" {
                         "never"
@@ -995,6 +1038,36 @@ impl Running {
         for w in &mut self.windows {
             w.ui.set_notice(text.clone());
             w.window.request_redraw();
+        }
+    }
+
+    fn load_tree(&self, window: WindowId) {
+        let tx = self.tree_tx.clone();
+        let proxy = self.proxy.clone();
+        self.places.bookmarks_tree(move |tree| {
+            let _ = tx.send((window, tree));
+            let _ = proxy.send_event(Wake);
+        });
+    }
+
+    fn recheck_bookmarks(&self) {
+        let mut urls: Vec<Url> = self
+            .windows
+            .iter()
+            .filter_map(|w| self.browser.window(w.id))
+            .flat_map(|w| w.tabs.iter())
+            .filter_map(|t| self.browser.tab(*t).and_then(|t| t.url.clone()))
+            .collect();
+        urls.sort();
+        urls.dedup();
+        for url in urls {
+            let tx = self.bookmark_tx.clone();
+            let proxy = self.proxy.clone();
+            let u = url.clone();
+            self.places.is_bookmarked(url, move |bookmarked| {
+                let _ = tx.send((u, bookmarked));
+                let _ = proxy.send_event(Wake);
+            });
         }
     }
 
