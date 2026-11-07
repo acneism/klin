@@ -4,6 +4,7 @@ mod findbar;
 mod icons;
 mod places_ui;
 mod requests;
+mod settings_ui;
 mod url_display;
 
 use egui::{Color32, CornerRadius, Key, Rect, RichText, Sense, Vec2};
@@ -38,6 +39,11 @@ pub enum Action {
         tab: TabId,
         request: klin_core::FindRequest,
     },
+    SetPref(String, klin_core::prefs::PrefValue),
+    ResetPref(String),
+    ClearHistory,
+    ImportFromFirefox,
+    OpenInternal(&'static str),
     MoveTab {
         tab: TabId,
         index: usize,
@@ -77,6 +83,7 @@ pub struct BrowserUi {
     history_filter: String,
     find_bars: findbar::FindBars,
     notice: Option<String>,
+    settings: settings_ui::SettingsState,
 }
 
 fn url_bar_id() -> egui::Id {
@@ -144,6 +151,7 @@ impl BrowserUi {
         root: &mut egui::Ui,
         browser: &Browser,
         window: WindowId,
+        prefs: &klin_core::prefs::UserPrefs,
         paint_page: &mut dyn FnMut(&egui::Painter, Rect),
     ) -> Frame {
         let mut actions = Vec::new();
@@ -211,10 +219,28 @@ impl BrowserUi {
         }
 
         let mut page_rect = Rect::NOTHING;
+        let mut native_page = false;
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(root, |ui| {
                 page_rect = ui.max_rect();
+                let internal = selected
+                    .and_then(|t| t.url.as_ref())
+                    .map(|u| u.as_str())
+                    .filter(|u| {
+                        *u == settings_ui::PREFERENCES_URL || *u == settings_ui::CONFIG_URL
+                    });
+                if let Some(url) = internal {
+                    native_page = true;
+                    ui.painter()
+                        .rect_filled(page_rect, 0.0, ui.visuals().panel_fill);
+                    if url == settings_ui::PREFERENCES_URL {
+                        settings_ui::preferences_page(ui, prefs, &mut self.settings, &mut actions);
+                    } else {
+                        settings_ui::config_page(ui, prefs, &mut self.settings, &mut actions);
+                    }
+                    return;
+                }
                 match selected.and_then(|t| t.crashed.as_ref().map(|r| (t, r))) {
                     Some((_, reason)) => crash_page(ui, reason, &mut actions),
                     None => {
@@ -251,10 +277,11 @@ impl BrowserUi {
             self.downloads_open = downloads::panel(&ctx, anchor, browser.downloads(), &mut actions);
         }
 
-        let page_blocked = match selected {
-            Some(tab) => self.requests.show(&ctx, tab, page_rect, &mut actions),
-            None => false,
-        };
+        let page_blocked = native_page
+            || match selected {
+                Some(tab) => self.requests.show(&ctx, tab, page_rect, &mut actions),
+                None => false,
+            };
         if page_blocked {
             actions.retain(|a| *a != Action::FocusPage);
         }
@@ -411,6 +438,8 @@ impl BrowserUi {
                 Command::Home,
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let zoom = tab.map(|t| t.zoom);
+                settings_ui::menu_button(ui, &mut self.settings, zoom, actions);
                 self.downloads_button = None;
                 if let Some(button) = downloads::button(ui, downloads) {
                     if button.clicked() {

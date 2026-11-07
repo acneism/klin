@@ -88,7 +88,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         proxy,
         start_url,
         profile: Some(profile),
-        startup: Some(Box::new((startup, session_paths))),
+        startup: Some(Box::new((startup, session_paths, prefs))),
         migration: args.migration,
     };
     event_loop.run_app(&mut app)?;
@@ -126,7 +126,7 @@ enum App {
         proxy: EventLoopProxy<Wake>,
         start_url: Option<Url>,
         profile: Option<Profile>,
-        startup: Option<Box<(StartupSession, SessionPaths)>>,
+        startup: Option<Box<(StartupSession, SessionPaths, UserPrefs)>>,
         migration: bool,
     },
     Running(Box<Running>),
@@ -185,6 +185,7 @@ struct Running {
     engine: ServoEngine,
     windows: Vec<BrowserWindow>,
     session_writer: Option<SessionWriter>,
+    prefs: UserPrefs,
     last_session: Session,
     saved_session: Session,
     next_session_save: Instant,
@@ -287,7 +288,7 @@ impl Running {
         proxy: EventLoopProxy<Wake>,
         start_url: Option<Url>,
         profile: Profile,
-        (startup, session_paths): (StartupSession, SessionPaths),
+        (startup, session_paths, prefs): (StartupSession, SessionPaths, UserPrefs),
     ) -> Result<Self, Box<dyn Error>> {
         let waker = {
             let proxy = proxy.clone();
@@ -353,12 +354,14 @@ impl Running {
             engine,
             windows: Vec::new(),
             session_writer: Some(SessionWriter::start(session_paths)),
+            prefs,
             last_session: Session::default(),
             saved_session: Session::default(),
             next_session_save: Instant::now() + SESSION_INTERVAL,
             focused: None,
             _profile: profile,
         };
+        running.apply_prefs();
         match startup {
             StartupSession::Restore { session, .. } => {
                 for state in &session.windows {
@@ -584,7 +587,7 @@ impl Running {
         let ctx = w.egui_state.egui_ctx().clone();
         let raw_input = w.egui_state.take_egui_input(&w.window);
         let mut frame = None;
-        let (ui, browser) = (&mut w.ui, &self.browser);
+        let (ui, browser, prefs) = (&mut w.ui, &self.browser, &self.prefs);
         let full = ctx.run_ui(raw_input, |root| {
             let mut paint_page = |painter: &egui::Painter, rect: egui::Rect| {
                 let Some(blit) = blitter.clone() else { return };
@@ -600,7 +603,7 @@ impl Running {
                     callback: Arc::new(callback),
                 });
             };
-            frame = Some(ui.show(root, browser, id, &mut paint_page));
+            frame = Some(ui.show(root, browser, id, prefs, &mut paint_page));
         });
         w.egui_state
             .handle_platform_output(&w.window, full.platform_output);
@@ -661,6 +664,32 @@ impl Running {
                 }
             }
             Action::ClearDownloads => self.browser.clear_downloads(),
+            Action::SetPref(name, value) => {
+                self.prefs.set(&name, value);
+                self.prefs_changed();
+            }
+            Action::ResetPref(name) => {
+                self.prefs.reset(&name);
+                self.prefs_changed();
+            }
+            Action::ClearHistory => {
+                self.places.clear_history();
+                let open: Vec<WindowId> = self
+                    .windows
+                    .iter()
+                    .filter(|w| w.ui.history_open())
+                    .map(|w| w.id)
+                    .collect();
+                for window in open {
+                    self.load_history(window);
+                }
+            }
+            Action::ImportFromFirefox => self.start_firefox_import(),
+            Action::OpenInternal(url) => {
+                if let Ok(url) = Url::parse(url) {
+                    self.browser.open_or_select(&mut self.engine, id, url);
+                }
+            }
             Action::Suggest(query) => {
                 let tx = self.suggestions_tx.clone();
                 let proxy = self.proxy.clone();
@@ -811,6 +840,13 @@ impl Running {
                     }
                 }
                 UiEffect::ToggleHistorySidebar(window) => self.toggle_history(window),
+                UiEffect::Quit => {
+                    let ids: Vec<WindowId> = self.windows.iter().map(|w| w.id).collect();
+                    for window in ids {
+                        let effects = self.browser.close_window(&mut self.engine, window);
+                        self.apply(event_loop, effects);
+                    }
+                }
                 UiEffect::ShowFindBar(window) => {
                     let tab = self.browser.window(window).and_then(|w| w.selected_tab());
                     if let (Some(tab), Some(w)) = (tab, self.win_mut(window)) {
@@ -868,6 +904,32 @@ impl Running {
         if let Some(writer) = self.session_writer.take() {
             writer.finish(self.last_session.clone());
         }
+    }
+
+    fn apply_prefs(&mut self) {
+        let home = Url::parse(&self.prefs.homepage()).ok();
+        self.browser.set_home(home);
+        self.browser
+            .set_history_enabled(self.prefs.history_enabled());
+        let dir = self.prefs.string(klin_core::prefs::DOWNLOAD_DIR, "");
+        self.downloads.set_dir(if dir.is_empty() {
+            default_download_dir()
+        } else {
+            dir.into()
+        });
+    }
+
+    fn prefs_changed(&mut self) {
+        self.apply_prefs();
+        let text = self.prefs.to_prefs_js();
+        let path = self._profile.path("prefs.js");
+        std::thread::spawn(move || {
+            let tmp = path.with_extension("js.tmp");
+            let result = std::fs::write(&tmp, text).and_then(|_| std::fs::rename(&tmp, &path));
+            if let Err(e) = result {
+                log::error!("cannot write {}: {e}", path.display());
+            }
+        });
     }
 
     fn start_firefox_import(&self) {

@@ -33,6 +33,7 @@ pub enum Command {
     ShowDownloads,
     ToggleReaderMode,
     ToggleFullScreen,
+    Quit,
 }
 
 impl Command {
@@ -64,6 +65,7 @@ impl Command {
             ShowDownloads => "Tools:Downloads",
             ToggleReaderMode => "View:ReaderView",
             ToggleFullScreen => "View:FullScreen",
+            Quit => "cmd_quitApplication",
             NextTab
             | PreviousTab
             | SelectTab(_)
@@ -143,6 +145,7 @@ pub fn default_shortcuts() -> Vec<(KeyChord, Command)> {
         (KeyChord::new(M::CTRL_ALT, ch('r')), ToggleReaderMode),
         (KeyChord::new(M::NONE, named(F(9))), ToggleReaderMode),
         (KeyChord::new(M::NONE, named(F(11))), ToggleFullScreen),
+        (KeyChord::new(M::CTRL_SHIFT, ch('q')), Quit),
     ];
     for n in 1..=8u8 {
         let digit = char::from(b'0' + n);

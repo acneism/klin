@@ -3,6 +3,8 @@ pub const SCHEME: &str = "klin";
 pub fn page(name: &str) -> Option<(&'static str, &'static [u8])> {
     match name {
         "newtab" | "home" | "blank" => Some(("text/html", include_bytes!("../pages/newtab.html"))),
+        "preferences" => Some(("text/html", include_bytes!("../pages/preferences.html"))),
+        "config" => Some(("text/html", include_bytes!("../pages/config.html"))),
         _ => None,
     }
 }

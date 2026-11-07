@@ -46,6 +46,7 @@ pub struct ImportStats {
 }
 
 enum Message {
+    ClearHistory,
     Import {
         places: Vec<ImportedPlace>,
         bookmarks: Vec<ImportedRoot>,
@@ -168,6 +169,10 @@ impl PlacesService {
             bookmarks,
             reply: Box::new(reply),
         });
+    }
+
+    pub fn clear_history(&self) {
+        self.send(Message::ClearHistory);
     }
 
     pub fn recent_history(
@@ -305,6 +310,7 @@ fn handle(db: &mut PlacesDb, message: Message) -> crate::places::Result<()> {
             }
             reply(stats);
         }
+        Message::ClearHistory => history::delete_everything(db)?,
         Message::RecentHistory { limit, reply } => {
             let infos = history::get_visit_infos(
                 db,

@@ -84,6 +84,7 @@ pub enum UiEffect {
         referrer: Option<Url>,
     },
     ToggleDownloadsPanel(WindowId),
+    Quit,
     RecordVisit {
         url: Url,
         kind: VisitKind,
@@ -120,6 +121,8 @@ pub struct Browser {
     site_zoom: SiteZoom,
     search: SearchEngine,
     downloads: Vec<klin_shared::download::Download>,
+    home: Option<Url>,
+    history_disabled: bool,
 }
 
 impl Browser {
@@ -204,6 +207,29 @@ impl Browser {
                 klin_shared::download::DownloadState::InProgress { .. }
             )
         });
+    }
+
+    pub fn set_home(&mut self, url: Option<Url>) {
+        self.home = url;
+    }
+
+    pub fn set_history_enabled(&mut self, enabled: bool) {
+        self.history_disabled = !enabled;
+    }
+
+    pub fn open_or_select(&mut self, engine: &mut dyn Engine, window: WindowId, url: Url) {
+        let existing = self.window(window).and_then(|w| {
+            w.tabs
+                .iter()
+                .copied()
+                .find(|t| self.tabs.get(t).and_then(|t| t.url.as_ref()) == Some(&url))
+        });
+        match existing {
+            Some(tab) => self.select_tab(engine, tab),
+            None => {
+                self.open_tab(engine, window, url, None, true);
+            }
+        }
     }
 
     pub fn search_engine(&self) -> &SearchEngine {
@@ -592,6 +618,7 @@ impl Browser {
             }
             NextTab | PreviousTab | SelectLastTab => {}
             ToggleHistorySidebar => return vec![UiEffect::ToggleHistorySidebar(window)],
+            Quit => return vec![UiEffect::Quit],
             Find => return vec![UiEffect::ShowFindBar(window)],
             FindAgain => {
                 return vec![UiEffect::FindAgain {
@@ -658,7 +685,11 @@ impl Browser {
                 }
             }
             Home => {
-                if let Ok(url) = Url::parse(prefs::HOMEPAGE) {
+                let home = self
+                    .home
+                    .clone()
+                    .or_else(|| Url::parse(prefs::HOMEPAGE).ok());
+                if let Some(url) = home {
                     engine.load(tab, &url);
                 }
             }
@@ -752,7 +783,10 @@ impl Browser {
                         effects.push(UiEffect::QueryBookmark(url.clone()));
                     }
 
-                    if !self.is_private_tab(tab) && (!same_page || kind == VisitKind::Reload) {
+                    if !self.is_private_tab(tab)
+                        && !self.history_disabled
+                        && (!same_page || kind == VisitKind::Reload)
+                    {
                         effects.push(UiEffect::RecordVisit {
                             url,
                             kind,
@@ -768,6 +802,7 @@ impl Browser {
                     t.title = title.clone();
                     if let Some(url) = t.url.clone().filter(is_bookmarkable)
                         && !private
+                        && !self.history_disabled
                         && !title.trim().is_empty()
                     {
                         return vec![UiEffect::RecordTitle { url, title }];

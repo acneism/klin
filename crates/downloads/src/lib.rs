@@ -50,6 +50,10 @@ impl DownloadService {
         &self.dir
     }
 
+    pub fn set_dir(&mut self, dir: PathBuf) {
+        self.dir = dir;
+    }
+
     pub fn start(&self, request: DownloadRequest) -> DownloadId {
         let id = DownloadId::next();
         let flag = Arc::new(AtomicBool::new(false));

@@ -17,7 +17,8 @@ shortcuts, data formats, settings.
 > Firefox's `sessionstore.jsonlz4` format and restored after a crash, or after a normal exit with
 > `browser.startup.page = 3` in `prefs.js`/`user.js`. Find in page (Ctrl+F, F3) works through
 > the selection API. `klin -migration` imports history, bookmarks and cookies from the default
-> Firefox profile. Not ready for everyday use.
+> Firefox profile. Settings: the ≡ menu → «Настройки» (about:preferences) and about:config,
+> stored in `prefs.js` like Firefox. Not ready for everyday use.
 
 The specification and architecture are in [docs/spec.md](docs/spec.md) (in Russian).
 

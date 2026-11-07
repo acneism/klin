@@ -16,6 +16,7 @@ pub enum Icon {
     StarFilled,
     Down,
     Up,
+    Menu,
 }
 
 pub fn button(ui: &mut Ui, enabled: bool, icon: Icon, size: f32) -> Response {
@@ -156,6 +157,11 @@ pub fn paint(painter: &egui::Painter, r: Rect, icon: Icon, color: Color32) {
         }
         Icon::Up => {
             line(vec![at(0.1, 0.7), at(0.5, 0.25), at(0.9, 0.7)]);
+        }
+        Icon::Menu => {
+            for y in [0.2, 0.5, 0.8] {
+                line(vec![at(0.05, y), at(0.95, y)]);
+            }
         }
         Icon::Plus => {
             line(vec![at(0.5, 0.0), at(0.5, 1.0)]);
