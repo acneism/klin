@@ -30,6 +30,8 @@ pub struct Tab {
     pub find_result: Option<crate::engine::FindResult>,
     pub committed: bool,
     pub readerable: bool,
+    pub blocked: Vec<(klin_shared::tracking::BlockCategory, String)>,
+    pub blocked_log: Vec<(Url, Vec<(klin_shared::tracking::BlockCategory, String)>)>,
     pub requests: Vec<PageRequest>,
 }
 
@@ -318,6 +320,8 @@ impl Browser {
                 loaded: true,
                 find_result: None,
                 readerable: false,
+                blocked: Vec::new(),
+                blocked_log: Vec::new(),
             },
         );
         let tabs = &self.tabs;
@@ -830,6 +834,19 @@ impl Browser {
                 t.committed = true;
                 if !same_page {
                     t.bookmarked = None;
+                    let blocked = std::mem::take(&mut t.blocked);
+                    if let Some(previous) = previous.clone()
+                        && !blocked.is_empty()
+                    {
+                        t.blocked_log.retain(|(u, _)| *u != previous);
+                        t.blocked_log.push((previous, blocked));
+                        if t.blocked_log.len() > BLOCKED_LOG_PAGES {
+                            t.blocked_log.remove(0);
+                        }
+                    }
+                    if let Some(i) = t.blocked_log.iter().position(|(u, _)| *u == url) {
+                        t.blocked = t.blocked_log.remove(i).1;
+                    }
                 }
                 let mut effects = Vec::new();
                 if is_bookmarkable(&url) {
@@ -936,6 +953,19 @@ impl Browser {
                 return vec![UiEffect::Redraw(tab)];
             }
             EngineEvent::NewFrame { tab } => return vec![UiEffect::Redraw(tab)],
+            EngineEvent::ContentBlocked { tab, url, category } => {
+                let Some(t) = self.tabs.get_mut(&tab) else {
+                    return Vec::new();
+                };
+                let Some(host) = url.host_str() else {
+                    return Vec::new();
+                };
+                if t.blocked.iter().any(|(_, h)| h == host) {
+                    return Vec::new();
+                }
+                t.blocked.push((category, host.to_owned()));
+                return vec![UiEffect::Redraw(tab)];
+            }
             EngineEvent::Readerable { tab, readerable } => {
                 if let Some(t) = self.tabs.get_mut(&tab) {
                     let current = t.url.as_ref().is_some_and(crate::reader::should_check_url);
@@ -981,6 +1011,8 @@ impl Browser {
         Vec::new()
     }
 }
+
+const BLOCKED_LOG_PAGES: usize = 10;
 
 fn is_bookmarkable(url: &Url) -> bool {
     matches!(url.scheme(), "http" | "https" | "file")
@@ -1088,6 +1120,40 @@ mod tests {
 
         b.execute(&mut e, w, Command::ToggleReaderMode);
         assert_eq!(e.calls, vec![Call::Load(tab, article)]);
+    }
+
+    #[test]
+    fn blocked_trackers_follow_the_page_in_history() {
+        use klin_shared::tracking::BlockCategory;
+        let (mut b, mut e, w) = setup();
+        let tab = b.window(w).unwrap().selected_tab().unwrap();
+        let first = url("https://a.example/one");
+        let second = url("https://a.example/two");
+        b.handle_event(
+            &mut e,
+            EngineEvent::UrlChanged {
+                tab,
+                url: first.clone(),
+            },
+        );
+        for tracker in ["https://t.example/a.js", "https://t.example/b.js"] {
+            b.handle_event(
+                &mut e,
+                EngineEvent::ContentBlocked {
+                    tab,
+                    url: url(tracker),
+                    category: BlockCategory::Social,
+                },
+            );
+        }
+        assert_eq!(b.tab(tab).unwrap().blocked.len(), 1);
+        b.handle_event(&mut e, EngineEvent::UrlChanged { tab, url: second });
+        assert!(b.tab(tab).unwrap().blocked.is_empty());
+        b.handle_event(&mut e, EngineEvent::UrlChanged { tab, url: first });
+        assert_eq!(
+            b.tab(tab).unwrap().blocked,
+            vec![(BlockCategory::Social, "t.example".to_owned())]
+        );
     }
 
     #[test]

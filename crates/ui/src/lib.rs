@@ -5,6 +5,7 @@ mod findbar;
 mod icons;
 mod library_ui;
 mod places_ui;
+mod protections_ui;
 mod requests;
 mod settings_ui;
 mod url_display;
@@ -88,6 +89,8 @@ pub struct BrowserUi {
     url_bar_rect: Option<Rect>,
     star_button: Option<Rect>,
     bookmark_panel_open: bool,
+    shield_button: Option<Rect>,
+    protections_open: bool,
     history_open: bool,
     history: Vec<HistoryItem>,
     history_filter: String,
@@ -323,6 +326,14 @@ impl BrowserUi {
             self.bookmark_panel_open = false;
         }
 
+        if let (Some(anchor), true, Some(tab)) =
+            (self.shield_button, self.protections_open, selected)
+        {
+            self.protections_open = protections_ui::panel(&ctx, anchor, tab, &mut actions);
+        } else {
+            self.protections_open = false;
+        }
+
         if let (Some(anchor), true) = (self.downloads_button, self.downloads_open) {
             self.downloads_open = downloads::panel(&ctx, anchor, browser.downloads(), &mut actions);
         }
@@ -487,6 +498,13 @@ impl BrowserUi {
                 "Домашняя страница (Alt+Home)",
                 Command::Home,
             );
+            self.shield_button = None;
+            if let Some(shield) = protections_ui::shield_button(ui, tab) {
+                if shield.clicked() {
+                    self.protections_open = !self.protections_open;
+                }
+                self.shield_button = Some(shield.rect);
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let zoom = tab.map(|t| t.zoom);
                 settings_ui::menu_button(ui, &mut self.settings, zoom, actions);

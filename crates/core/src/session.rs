@@ -102,6 +102,8 @@ fn lazy_tab(id: TabId, window: WindowId, state: &TabState, current: &EntryState)
         loaded: false,
         find_result: None,
         readerable: false,
+        blocked: Vec::new(),
+        blocked_log: Vec::new(),
     }
 }
 

@@ -183,6 +183,8 @@ struct Running {
     tree_tx: Sender<(WindowId, BookmarkTree)>,
     toolbar_rx: Receiver<Vec<BookmarkNode>>,
     toolbar_tx: Sender<Vec<BookmarkNode>>,
+    tracking_lists: Option<Arc<klin_content_blocking::Lists>>,
+    tracking_rx: Receiver<Arc<klin_content_blocking::Lists>>,
     import_rx: Receiver<Result<ImportedData, String>>,
     import_tx: Sender<Result<ImportedData, String>>,
     import_done_rx: Receiver<(ImportStats, usize)>,
@@ -337,6 +339,17 @@ impl Running {
         let (toolbar_tx, toolbar_rx) = channel();
         let (tree_tx, tree_rx) = channel();
         let (import_done_tx, import_done_rx) = channel();
+        let (tracking_tx, tracking_rx) = channel();
+        {
+            let proxy = proxy.clone();
+            klin_content_blocking::ListUpdater::new(
+                profile.path("trackingprotection"),
+                engine.user_agent(),
+            )
+            .spawn(tracking_tx, move || {
+                let _ = proxy.send_event(Wake);
+            });
+        }
         let mut running = Self {
             proxy,
             picked_tx,
@@ -358,6 +371,8 @@ impl Running {
             import_tx,
             toolbar_rx,
             toolbar_tx,
+            tracking_lists: None,
+            tracking_rx,
             tree_rx,
             tree_tx,
             import_done_rx,
@@ -534,6 +549,14 @@ impl Running {
                 w.ui.set_bookmarks_tree(tree);
                 w.window.request_redraw();
             }
+        }
+        let mut lists_changed = false;
+        while let Ok(lists) = self.tracking_rx.try_recv() {
+            self.tracking_lists = Some(lists);
+            lists_changed = true;
+        }
+        if lists_changed {
+            self.apply_tracking_protection();
         }
         while let Ok(items) = self.toolbar_rx.try_recv() {
             for w in &mut self.windows {
@@ -1002,6 +1025,31 @@ impl Running {
         } else {
             dir.into()
         });
+        self.apply_tracking_protection();
+    }
+
+    fn apply_tracking_protection(&mut self) {
+        use klin_content_blocking::{Blocker, Policy, Scope};
+        use klin_core::prefs::*;
+        let Some(lists) = self.tracking_lists.clone() else {
+            return;
+        };
+        let p = &self.prefs;
+        let policy = Policy {
+            tracking: Scope::from_prefs(
+                p.known_bool(TRACKING_PROTECTION),
+                p.known_bool(TRACKING_PROTECTION_PRIVATE),
+            ),
+            content_list: p.content_blocking_strict(),
+            social: p.known_bool(SOCIAL_TRACKING),
+            cryptomining: p.known_bool(CRYPTOMINING),
+            fingerprinting: p.known_bool(FINGERPRINTING),
+            email: Scope::from_prefs(
+                p.known_bool(EMAIL_TRACKING),
+                p.known_bool(EMAIL_TRACKING_PRIVATE),
+            ),
+        };
+        self.engine.set_blocker(Some(Blocker::new(lists, policy)));
     }
 
     fn prefs_changed(&mut self) {

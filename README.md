@@ -20,7 +20,8 @@ shortcuts, data formats, settings.
 > Firefox profile. Settings: the ≡ menu → «Настройки» (about:preferences) and about:config,
 > stored in `prefs.js` like Firefox. The Library (Ctrl+Shift+H, Ctrl+Shift+O) shows history,
 > downloads and all bookmark folders with search and deletion. Reader View (F9, Ctrl+Alt+R) uses
-> Mozilla's Readability.js and Firefox's reader styles. Not ready for everyday use.
+> Mozilla's Readability.js and Firefox's reader styles. Tracking protection blocks third-party
+> trackers from the Disconnect lists Firefox uses, in Standard and Strict modes. Not ready for everyday use.
 
 The specification and architecture are in [docs/spec.md](docs/spec.md) (in Russian).
 
@@ -59,7 +60,8 @@ monthly breaking changes in Servo's API are fixed in one place.
 | `downloads` | download service: background HTTP download with the engine's cookies, Firefox-style file names | done for 0.1 |
 | `platform-win` | open a file, show it in Explorer | started |
 | `importer` | reads history, bookmarks and cookies from a Firefox profile | done for 0.2 |
-| `sync`, `remote-settings`, `content-blocking`, `extensions` | services and Windows integration | stubs, scheduled per the version plan |
+| `content-blocking` | tracking protection: Disconnect lists, Firefox's Standard and Strict rules, list updates | done for 0.3 |
+| `sync`, `remote-settings`, `extensions` | services and Windows integration | stubs, scheduled per the version plan |
 
 ## License
 

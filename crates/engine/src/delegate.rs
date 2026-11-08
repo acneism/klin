@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::{Rc, Weak};
 
 use euclid::Scale;
@@ -28,6 +28,8 @@ pub(crate) struct Shared {
     pub controls: RefCell<Vec<(EmbedderControlId, TabId, RequestId)>>,
     pub visible: RefCell<HashMap<WindowId, TabId>>,
     pub background_opener: RefCell<Option<TabId>>,
+    pub private_windows: RefCell<HashSet<WindowId>>,
+    pub blocker: RefCell<Option<klin_content_blocking::Blocker>>,
 }
 
 impl Shared {
@@ -429,8 +431,30 @@ impl WebViewDelegate for Delegate {
 
     fn load_web_resource(&self, webview: WebView, load: servo::WebResourceLoad) {
         let request = load.request();
-        let is_download = request.is_for_main_frame
-            && request.method == http::Method::GET
+        if !request.is_for_main_frame {
+            let blocked = match (self.shared.blocker.borrow().as_ref(), webview.url()) {
+                (Some(blocker), Some(top)) => {
+                    let private = self
+                        .shared
+                        .tab(&webview)
+                        .and_then(|tab| self.shared.window_of(tab))
+                        .is_some_and(|w| self.shared.private_windows.borrow().contains(&w));
+                    blocker.classify(&request.url, &top, private)
+                }
+                _ => None,
+            };
+            if let Some(category) = blocked {
+                let url = request.url.clone();
+                let response = servo::WebResourceResponse::new(url.clone());
+                load.intercept(response).cancel();
+                if let Some(tab) = self.shared.tab(&webview) {
+                    self.shared
+                        .push(EngineEvent::ContentBlocked { tab, url, category });
+                }
+            }
+            return;
+        }
+        let is_download = request.method == http::Method::GET
             && klin_core::downloads::looks_like_download(&request.url);
         if !is_download {
             return;

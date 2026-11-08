@@ -354,6 +354,10 @@ impl ServoEngine {
         self.webview(tab)
     }
 
+    pub fn set_blocker(&self, blocker: Option<klin_content_blocking::Blocker>) {
+        *self.shared.blocker.borrow_mut() = blocker;
+    }
+
     fn webview(&self, tab: TabId) -> Option<WebView> {
         self.shared.webviews.borrow().get(&tab).cloned()
     }
@@ -362,6 +366,7 @@ impl ServoEngine {
 impl Engine for ServoEngine {
     fn open_tab(&mut self, tab: TabId, window: WindowId, url: &Url, private: bool) {
         if private {
+            self.shared.private_windows.borrow_mut().insert(window);
             warn!("private browsing is not isolated yet");
         }
         let Some(surface) = self.surface(window) else {

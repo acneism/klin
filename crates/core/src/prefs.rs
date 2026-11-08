@@ -24,6 +24,24 @@ pub const DOWNLOAD_DIR: &str = "browser.download.dir";
 
 pub const BOOKMARKS_TOOLBAR: &str = "browser.toolbars.bookmarks.visibility";
 
+pub const CONTENT_BLOCKING_CATEGORY: &str = "browser.contentblocking.category";
+
+pub const TRACKING_PROTECTION: &str = "privacy.trackingprotection.enabled";
+
+pub const TRACKING_PROTECTION_PRIVATE: &str = "privacy.trackingprotection.pbmode.enabled";
+
+pub const SOCIAL_TRACKING: &str = "privacy.trackingprotection.socialtracking.enabled";
+
+pub const CRYPTOMINING: &str = "privacy.trackingprotection.cryptomining.enabled";
+
+pub const FINGERPRINTING: &str = "privacy.trackingprotection.fingerprinting.enabled";
+
+pub const EMAIL_TRACKING: &str = "privacy.trackingprotection.emailtracking.enabled";
+
+pub const EMAIL_TRACKING_PRIVATE: &str = "privacy.trackingprotection.emailtracking.pbmode.enabled";
+
+pub const STRICT_PREFS: &[&str] = &[TRACKING_PROTECTION, EMAIL_TRACKING];
+
 pub const KNOWN: &[(&str, PrefDefault)] = &[
     (STARTUP_PAGE, PrefDefault::Int(1)),
     (HOMEPAGE_PREF, PrefDefault::String(HOMEPAGE)),
@@ -31,6 +49,14 @@ pub const KNOWN: &[(&str, PrefDefault)] = &[
     (HISTORY_ENABLED, PrefDefault::Bool(true)),
     (DOWNLOAD_DIR, PrefDefault::String("")),
     (BOOKMARKS_TOOLBAR, PrefDefault::String("newtab")),
+    (CONTENT_BLOCKING_CATEGORY, PrefDefault::String("standard")),
+    (TRACKING_PROTECTION, PrefDefault::Bool(false)),
+    (TRACKING_PROTECTION_PRIVATE, PrefDefault::Bool(true)),
+    (SOCIAL_TRACKING, PrefDefault::Bool(true)),
+    (CRYPTOMINING, PrefDefault::Bool(true)),
+    (FINGERPRINTING, PrefDefault::Bool(true)),
+    (EMAIL_TRACKING, PrefDefault::Bool(false)),
+    (EMAIL_TRACKING_PRIVATE, PrefDefault::Bool(true)),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -134,6 +160,14 @@ impl UserPrefs {
 
     pub fn bookmarks_toolbar(&self) -> String {
         self.string(BOOKMARKS_TOOLBAR, "newtab")
+    }
+
+    pub fn known_bool(&self, name: &str) -> bool {
+        matches!(self.value_or_default(name), Some(PrefValue::Bool(true)))
+    }
+
+    pub fn content_blocking_strict(&self) -> bool {
+        self.string(CONTENT_BLOCKING_CATEGORY, "standard") == "strict"
     }
 
     pub fn history_enabled(&self) -> bool {

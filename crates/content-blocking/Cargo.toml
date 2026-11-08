@@ -1,6 +1,6 @@
 [package]
 name = "klin-content-blocking"
-description = "Правила блокировки и их сопоставление с запросами"
+description = "Защита от отслеживания: списки Disconnect и правила блокировки Firefox"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,7 +8,15 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+klin-shared.workspace = true
+log.workspace = true
+psl.workspace = true
+serde_json.workspace = true
+ureq.workspace = true
 url.workspace = true
+
+[dev-dependencies]
+rustls.workspace = true
 
 [lints]
 workspace = true

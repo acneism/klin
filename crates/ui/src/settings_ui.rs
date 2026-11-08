@@ -281,6 +281,45 @@ pub(crate) fn preferences_page(
                     }
 
                     section(ui, "Приватность и защита");
+                    group(ui, "Улучшенная защита от отслеживания");
+                    ui.label(
+                        RichText::new(
+                            "Трекеры следят за вами в Интернете, собирая информацию о ваших \
+                             привычках и интересах. Klin блокирует многие из них.",
+                        )
+                        .weak(),
+                    );
+                    let category = prefs.string(prefs::CONTENT_BLOCKING_CATEGORY, "standard");
+                    let standard = ui
+                        .radio(category == "standard", "Стандартная")
+                        .on_hover_text(
+                            "Баланс защиты и производительности: трекеры социальных сетей, \
+                             криптомайнеры и сборщики отпечатков; отслеживающее содержимое \
+                             — в приватных окнах",
+                        );
+                    if standard.clicked() && category != "standard" {
+                        actions.push(Action::ResetPref(prefs::CONTENT_BLOCKING_CATEGORY.into()));
+                        for name in prefs::STRICT_PREFS {
+                            actions.push(Action::ResetPref((*name).into()));
+                        }
+                    }
+                    let strict = ui.radio(category == "strict", "Строгая").on_hover_text(
+                        "Сильнее защищает, но может нарушить работу некоторых сайтов: \
+                         отслеживающее содержимое блокируется во всех окнах",
+                    );
+                    if strict.clicked() && category != "strict" {
+                        actions.push(Action::SetPref(
+                            prefs::CONTENT_BLOCKING_CATEGORY.into(),
+                            PrefValue::String("strict".into()),
+                        ));
+                        for name in prefs::STRICT_PREFS {
+                            actions.push(Action::SetPref((*name).into(), PrefValue::Bool(true)));
+                        }
+                    }
+                    if category != "standard" && category != "strict" {
+                        let _ = ui.radio(true, "Особая (изменена в about:config)");
+                    }
+
                     group(ui, "История");
                     let mut remember = prefs.history_enabled();
                     if ui

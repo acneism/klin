@@ -37,6 +37,7 @@ pub mod bookmarks;
 pub mod download;
 pub mod import;
 pub mod session;
+pub mod tracking;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum LoadStatus {

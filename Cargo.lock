@@ -3268,6 +3268,7 @@ dependencies = [
  "egui",
  "egui-winit",
  "egui_glow",
+ "klin-content-blocking",
  "klin-core",
  "klin-downloads",
  "klin-engine",
@@ -3288,6 +3289,12 @@ dependencies = [
 name = "klin-content-blocking"
 version = "0.0.1"
 dependencies = [
+ "klin-shared",
+ "log",
+ "psl",
+ "rustls",
+ "serde_json",
+ "ureq",
  "url",
 ]
 
@@ -4918,6 +4925,21 @@ dependencies = [
  "quote",
  "syn 2.0.119",
 ]
+
+[[package]]
+name = "psl"
+version = "2.1.248"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "db58c388e851a5e62d8b5373b0f41135edac0bd43009832ba362691089d7367c"
+dependencies = [
+ "psl-types",
+]
+
+[[package]]
+name = "psl-types"
+version = "2.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33cb294fe86a74cbcf50d4445b37da762029549ebeea341421c7c70370f86cac"
 
 [[package]]
 name = "pulp"

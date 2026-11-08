@@ -75,6 +75,11 @@ pub enum EngineEvent {
         tab: TabId,
         readerable: bool,
     },
+    ContentBlocked {
+        tab: TabId,
+        url: Url,
+        category: klin_shared::tracking::BlockCategory,
+    },
     DownloadRequested {
         tab: TabId,
         url: Url,

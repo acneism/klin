@@ -19,6 +19,8 @@ pub enum Icon {
     Menu,
     Reader,
     ReaderActive,
+    Shield,
+    ShieldActive,
 }
 
 pub fn button(ui: &mut Ui, enabled: bool, icon: Icon, size: f32) -> Response {
@@ -178,6 +180,22 @@ pub fn paint(painter: &egui::Painter, r: Rect, icon: Icon, color: Color32) {
             ));
             for y in [0.28, 0.5, 0.72] {
                 painter.add(Shape::line(vec![at(0.3, y), at(0.7, y)], stroke));
+            }
+        }
+        Icon::Shield | Icon::ShieldActive => {
+            let outline = vec![
+                at(0.5, 0.0),
+                at(0.95, 0.15),
+                at(0.9, 0.55),
+                at(0.5, 1.0),
+                at(0.1, 0.55),
+                at(0.05, 0.15),
+            ];
+            if icon == Icon::ShieldActive {
+                let fill = Color32::from_rgb(0x9a, 0x5c, 0xf5);
+                painter.add(Shape::convex_polygon(outline, fill, Stroke::new(1.6, fill)));
+            } else {
+                painter.add(Shape::closed_line(outline, stroke));
             }
         }
         Icon::Plus => {

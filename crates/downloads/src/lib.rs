@@ -144,6 +144,11 @@ impl Job {
         let agent = ureq::Agent::config_builder()
             .timeout_connect(Some(Duration::from_secs(30)))
             .http_status_as_error(true)
+            .tls_config(
+                ureq::tls::TlsConfig::builder()
+                    .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                    .build(),
+            )
             .build()
             .new_agent();
         let mut call = agent
