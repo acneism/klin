@@ -145,6 +145,7 @@ struct BrowserWindow {
     painter: egui_glow::Painter,
     ui: BrowserUi,
     page_rect: [f32; 4],
+    popup_rect: Option<[f32; 4]>,
     ui_has_focus: bool,
     page_blocked: bool,
     modifiers: ModifiersState,
@@ -154,8 +155,14 @@ struct BrowserWindow {
 }
 
 impl BrowserWindow {
+    fn popup_point(&self) -> Option<(f32, f32)> {
+        let [px, py, w, h] = self.popup_rect?;
+        let (lx, ly) = (self.cursor.0 - px, self.cursor.1 - py);
+        (lx >= 0.0 && ly >= 0.0 && lx < w && ly < h).then_some((lx, ly))
+    }
+
     fn page_point(&self) -> Option<(f32, f32)> {
-        if self.page_blocked {
+        if self.page_blocked || self.popup_point().is_some() {
             return None;
         }
         let [px, py, w, h] = self.page_rect;
@@ -581,6 +588,7 @@ impl Running {
             painter,
             ui,
             page_rect: [0.0; 4],
+            popup_rect: None,
             ui_has_focus: false,
             page_blocked: false,
             modifiers: ModifiersState::empty(),
@@ -776,7 +784,15 @@ impl Running {
                     tab,
                     status: klin_shared::LoadStatus::Started,
                 } => self.extensions.host.navigated(*tab),
-                klin_core::EngineEvent::Closed { tab } => self.extensions.host.navigated(*tab),
+                klin_core::EngineEvent::Closed { tab } => {
+                    self.extensions.host.navigated(*tab);
+                    let windows: Vec<WindowId> = self.windows.iter().map(|w| w.id).collect();
+                    for window in windows {
+                        if self.engine.popup_tab(window) == Some(*tab) {
+                            self.close_popup(window);
+                        }
+                    }
+                }
                 _ => {}
             }
             let tab_update = match &event {
@@ -813,6 +829,9 @@ impl Running {
         self.engine.begin_frame(id);
         let blitter: Option<Arc<klin_engine::PageBlitter>> =
             self.engine.page_blitter(id).map(Arc::new);
+        let popup_blitter: Option<Arc<klin_engine::PageBlitter>> =
+            self.engine.popup_blitter(id).map(Arc::new);
+        let popup_size = self.engine.popup_size(id);
         let w = &mut self.windows[index];
         let ctx = w.egui_state.egui_ctx().clone();
         let raw_input = w.egui_state.take_egui_input(&w.window);
@@ -833,7 +852,28 @@ impl Running {
                     callback: Arc::new(callback),
                 });
             };
-            frame = Some(ui.show(root, browser, id, prefs, &mut paint_page));
+            let ppp = root.ctx().pixels_per_point();
+            let mut paint_popup = |painter: &egui::Painter, rect: egui::Rect| {
+                let Some(blit) = popup_blitter.clone() else {
+                    return;
+                };
+                let callback = egui_glow::CallbackFn::new(move |info, painter| {
+                    let v = info.viewport_in_pixels();
+                    blit(
+                        painter.gl(),
+                        [v.left_px, v.from_bottom_px, v.width_px, v.height_px],
+                    );
+                });
+                painter.add(egui::PaintCallback {
+                    rect,
+                    callback: Arc::new(callback),
+                });
+            };
+            let popup = popup_size.map(|(pw, ph)| klin_ui::Popup {
+                size: egui::vec2(pw as f32 / ppp, ph as f32 / ppp),
+                paint: &mut paint_popup,
+            });
+            frame = Some(ui.show(root, browser, id, prefs, &mut paint_page, popup));
         });
         w.egui_state
             .handle_platform_output(&w.window, full.platform_output);
@@ -868,8 +908,20 @@ impl Running {
                 r.width() * ppp,
                 r.height() * ppp,
             ];
+            w.popup_rect = frame.popup_rect.map(|r| {
+                [
+                    r.min.x * ppp,
+                    r.min.y * ppp,
+                    r.width() * ppp,
+                    r.height() * ppp,
+                ]
+            });
+            let popup_dismissed = frame.popup_dismissed;
             let (pw, ph) = (w.page_rect[2].round() as u32, w.page_rect[3].round() as u32);
             self.engine.resize_page(id, pw, ph);
+            if popup_dismissed {
+                self.close_popup(id);
+            }
             for action in frame.actions {
                 self.act(event_loop, id, action);
             }
@@ -1378,6 +1430,17 @@ impl Running {
         }
     }
 
+    fn close_popup(&mut self, window: WindowId) {
+        if let Some(tab) = self.engine.close_popup(window) {
+            self.extensions.host.navigated(tab);
+        }
+        if let Some(w) = self.win_mut(window) {
+            w.ui.popup_closed();
+            w.popup_rect = None;
+            w.window.request_redraw();
+        }
+    }
+
     fn install_addon(&mut self, path: std::path::PathBuf) {
         match self.extensions.install(&path, &mut self.engine) {
             Ok(name) => self.notify_all(format!("Дополнение «{name}» установлено.")),
@@ -1515,6 +1578,7 @@ impl Running {
         if let WindowEvent::Focused(true) = event {
             self.focused = Some(id);
         }
+        let popup_tab = self.engine.popup_tab(id);
         let Some(w) = self.win_mut(id) else { return };
         let egui_response = w.egui_state.on_window_event(&w.window, &event);
         if egui_response.repaint {
@@ -1553,28 +1617,38 @@ impl Running {
                         return;
                     }
                 }
-                if ui_has_focus {
+                let popup = popup_tab;
+                if ui_has_focus && popup.is_none() {
                     return;
                 }
                 let code = match event.physical_key {
                     PhysicalKey::Code(code) => Some(format!("{code:?}")),
                     PhysicalKey::Unidentified(_) => None,
                 };
-                self.send(
-                    id,
-                    InputEvent::Key {
-                        key: key.unwrap_or(Key::Named(NamedKey::Other)),
-                        text: event.text.map(|t| t.to_string()),
-                        code,
-                        modifiers,
-                        pressed,
-                        repeat: event.repeat,
-                    },
-                );
+                let input = InputEvent::Key {
+                    key: key.unwrap_or(Key::Named(NamedKey::Other)),
+                    text: event.text.map(|t| t.to_string()),
+                    code,
+                    modifiers,
+                    pressed,
+                    repeat: event.repeat,
+                };
+                match popup {
+                    Some(popup) => klin_core::Engine::send_input(&mut self.engine, popup, input),
+                    None => self.send(id, input),
+                }
             }
             WindowEvent::CursorMoved { position, .. } => {
                 w.cursor = (position.x as f32, position.y as f32);
-                if let Some((x, y)) = w.page_point() {
+                if let Some((x, y)) = w.popup_point()
+                    && let Some(popup) = popup_tab
+                {
+                    klin_core::Engine::send_input(
+                        &mut self.engine,
+                        popup,
+                        InputEvent::MouseMove { x, y },
+                    );
+                } else if let Some((x, y)) = w.page_point() {
                     self.send(id, InputEvent::MouseMove { x, y });
                 }
             }
@@ -1598,7 +1672,20 @@ impl Running {
                     self.execute(event_loop, id, cmd);
                     return;
                 }
-                if let Some((x, y)) = w.page_point() {
+                if let Some((x, y)) = w.popup_point()
+                    && let Some(popup) = popup_tab
+                {
+                    klin_core::Engine::send_input(
+                        &mut self.engine,
+                        popup,
+                        InputEvent::MouseButton {
+                            button,
+                            x,
+                            y,
+                            pressed,
+                        },
+                    );
+                } else if let Some((x, y)) = w.page_point() {
                     self.send(
                         id,
                         InputEvent::MouseButton {
@@ -1615,7 +1702,15 @@ impl Running {
                     MouseScrollDelta::LineDelta(x, y) => (f64::from(x) * 76.0, f64::from(y) * 76.0),
                     MouseScrollDelta::PixelDelta(d) => (d.x, d.y),
                 };
-                if let Some((x, y)) = w.page_point() {
+                if let Some((x, y)) = w.popup_point()
+                    && let Some(popup) = popup_tab
+                {
+                    klin_core::Engine::send_input(
+                        &mut self.engine,
+                        popup,
+                        InputEvent::Wheel { dx, dy, x, y },
+                    );
+                } else if let Some((x, y)) = w.page_point() {
                     self.send(id, InputEvent::Wheel { dx, dy, x, y });
                 }
             }

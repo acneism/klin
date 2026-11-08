@@ -142,6 +142,7 @@ impl std::error::Error for EngineError {}
 pub(crate) struct Surface {
     window_context: Rc<WindowRenderingContext>,
     pub page_context: Rc<OffscreenRenderingContext>,
+    pub popup_context: Rc<OffscreenRenderingContext>,
     pub scale: Cell<f32>,
 }
 
@@ -230,9 +231,11 @@ impl ServoEngine {
             .make_current()
             .map_err(|e| EngineError(format!("make_current: {e:?}")))?;
         let page_context = Rc::new(window_context.offscreen_context(non_zero(size.0, size.1)));
+        let popup_context = Rc::new(window_context.offscreen_context(non_zero(320, 240)));
         let surface = Surface {
             window_context,
             page_context,
+            popup_context,
             scale: Cell::new(scale),
         };
         self.shared
@@ -343,6 +346,9 @@ impl ServoEngine {
         if let Some(webview) = self.visible_webview(window) {
             webview.paint();
         }
+        if let Some(webview) = self.popup_webview(window) {
+            webview.paint();
+        }
         surface.window_context.prepare_for_rendering();
     }
 
@@ -380,7 +386,10 @@ impl ServoEngine {
             return;
         }
 
-        match self.shared.webviews_of(window).first() {
+        match self
+            .visible_webview(window)
+            .or_else(|| self.shared.webviews_of(window).into_iter().next())
+        {
             Some(webview) => webview.resize(size),
             None => surface.page_context.resize(size),
         }
@@ -425,29 +434,86 @@ impl ServoEngine {
         }
     }
 
-    pub fn open_extension_view(&mut self, tab: TabId, url: &Url) -> bool {
-        let Some((window, surface)) = self
-            .shared
-            .surfaces
-            .borrow()
-            .iter()
-            .next()
-            .map(|(w, s)| (*w, s.clone()))
-        else {
-            return false;
-        };
-        let rc: Rc<dyn RenderingContext> = surface.page_context.clone();
-        let mut builder = WebViewBuilder::new(&self.servo, rc)
+    fn extension_webview(
+        &self,
+        context: Rc<dyn RenderingContext>,
+        url: &Url,
+        scale: f32,
+    ) -> WebView {
+        let mut builder = WebViewBuilder::new(&self.servo, context)
             .url(url.clone())
-            .hidpi_scale_factor(Scale::new(surface.scale.get()))
+            .hidpi_scale_factor(Scale::new(scale))
             .delegate(self.delegate.clone());
         if let Some(user_content) = self.shared.user_content.borrow().clone() {
             builder = builder.user_content_manager(user_content);
         }
-        let webview = builder.build();
+        builder.build()
+    }
+
+    pub fn open_extension_view(&mut self, tab: TabId, url: &Url) -> bool {
+        let Some(surface) = self.shared.surfaces.borrow().values().next().cloned() else {
+            return false;
+        };
+        let context = Rc::new(surface.window_context.offscreen_context(non_zero(1, 1)));
+        let webview = self.extension_webview(context.clone(), url, surface.scale.get());
         webview.hide();
-        self.shared.register(webview, window, tab);
+        self.shared.register_detached(webview, tab);
+        self.shared
+            .detached_contexts
+            .borrow_mut()
+            .insert(tab, context);
         true
+    }
+
+    fn popup_webview(&self, window: WindowId) -> Option<WebView> {
+        let tab = *self.shared.popups.borrow().get(&window)?;
+        self.webview(tab)
+    }
+
+    pub fn popup_tab(&self, window: WindowId) -> Option<TabId> {
+        self.shared.popups.borrow().get(&window).copied()
+    }
+
+    pub fn open_popup(&mut self, window: WindowId, tab: TabId, url: &Url) -> bool {
+        self.close_popup(window);
+        let Some(surface) = self.surface(window) else {
+            return false;
+        };
+        let scale = surface.scale.get();
+        let size = non_zero((320.0 * scale) as u32, (60.0 * scale) as u32);
+        surface.popup_context.resize(size);
+        let webview = self.extension_webview(surface.popup_context.clone(), url, scale);
+        webview.show();
+        webview.set_focused(true);
+        self.shared.register_detached(webview, tab);
+        self.shared.popups.borrow_mut().insert(window, tab);
+        true
+    }
+
+    pub fn close_popup(&mut self, window: WindowId) -> Option<TabId> {
+        let tab = self.shared.popups.borrow_mut().remove(&window)?;
+        self.shared.unregister(tab);
+        Some(tab)
+    }
+
+    pub fn popup_size(&self, window: WindowId) -> Option<(u32, u32)> {
+        self.popup_webview(window)?;
+        let size = self.surface(window)?.popup_context.size();
+        Some((size.width, size.height))
+    }
+
+    pub fn popup_blitter(&self, window: WindowId) -> Option<PageBlitter> {
+        self.popup_webview(window)?;
+        let blit = self
+            .surface(window)?
+            .popup_context
+            .render_to_parent_callback()?;
+        Some(Box::new(move |gl, [x, y, w, h]| {
+            blit(
+                gl,
+                euclid::Rect::new(euclid::Point2D::new(x, y), euclid::Size2D::new(w, h)),
+            )
+        }))
     }
 
     pub fn evaluate(&self, tab: TabId, script: String) {

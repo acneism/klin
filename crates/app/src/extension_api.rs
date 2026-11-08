@@ -383,7 +383,11 @@ impl Running {
     pub(crate) fn addon_clicked(&mut self, event_loop: &ActiveEventLoop, uuid: &str) {
         if let Some(url) = self.extensions.popup_url(uuid) {
             if let Some(window) = self.current_window() {
-                self.browser.open_or_select(&mut self.engine, window, url);
+                if self.engine.popup_tab(window).is_some() {
+                    self.close_popup(window);
+                    return;
+                }
+                self.engine.open_popup(window, TabId::next(), &url);
                 self.request_redraw(window);
             }
             return;

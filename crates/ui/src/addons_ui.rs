@@ -12,6 +12,7 @@ pub const ADDONS_URL: &str = "about:addons";
 #[derive(Default)]
 pub(crate) struct AddonsState {
     pub addons: Vec<AddonInfo>,
+    pub popup_anchor: Option<egui::Rect>,
     path: String,
     confirm_remove: Option<String>,
     icons: HashMap<String, (Arc<Image>, TextureHandle)>,
@@ -117,6 +118,9 @@ pub(crate) fn toolbar_buttons(
             );
         }
         if response.on_hover_text(&action.title).clicked() {
+            if action.has_popup {
+                state.popup_anchor = Some(rect);
+            }
             actions.push(Action::AddonClicked(addon.uuid.clone()));
         }
     }

@@ -103,6 +103,13 @@ pub struct Frame {
     pub page_rect: Rect,
     pub ui_has_focus: bool,
     pub page_blocked: bool,
+    pub popup_rect: Option<Rect>,
+    pub popup_dismissed: bool,
+}
+
+pub struct Popup<'a> {
+    pub size: Vec2,
+    pub paint: &'a mut dyn FnMut(&egui::Painter, Rect),
 }
 
 #[derive(Default)]
@@ -238,6 +245,7 @@ impl BrowserUi {
         window: WindowId,
         prefs: &klin_core::prefs::UserPrefs,
         paint_page: &mut dyn FnMut(&egui::Painter, Rect),
+        popup: Option<Popup<'_>>,
     ) -> Frame {
         let mut actions = Vec::new();
         let selected = browser.selected_tab(window);
@@ -414,12 +422,48 @@ impl BrowserUi {
             ctx.memory_mut(|m| m.surrender_focus(url_bar_id()));
         }
         let ui_has_focus = page_blocked || ctx.memory(|m| m.focused().is_some());
+        let mut popup_rect = None;
+        let mut popup_dismissed = false;
+        if let (Some(popup), Some(anchor)) = (popup, self.addons.popup_anchor) {
+            let pos = egui::pos2(
+                (anchor.right() - popup.size.x).max(4.0),
+                anchor.bottom() + 2.0,
+            );
+            let area = egui::Area::new(egui::Id::new("klin-addon-popup"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(pos)
+                .show(&ctx, |ui| {
+                    egui::Frame::popup(ui.style())
+                        .inner_margin(0.0)
+                        .show(ui, |ui| {
+                            let (rect, _) = ui.allocate_exact_size(popup.size, Sense::hover());
+                            (popup.paint)(ui.painter(), rect);
+                            rect
+                        })
+                        .inner
+                });
+            popup_rect = Some(area.inner);
+            let outer = area.response.rect;
+            popup_dismissed = ctx.input(|i| {
+                i.key_pressed(Key::Escape)
+                    || (i.pointer.any_pressed()
+                        && i.pointer
+                            .press_origin()
+                            .is_some_and(|p| !outer.contains(p) && !anchor.contains(p)))
+            });
+        }
         Frame {
             actions,
             page_rect,
             ui_has_focus,
             page_blocked,
+            popup_rect,
+            popup_dismissed,
         }
+    }
+
+    pub fn popup_closed(&mut self) {
+        self.addons.popup_anchor = None;
     }
 
     fn sync_url(&mut self, tab: Option<&Tab>) {

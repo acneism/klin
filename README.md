@@ -24,7 +24,8 @@ shortcuts, data formats, settings.
 > trackers from the Disconnect lists Firefox uses, in Standard and Strict modes. PDF files open
 > in a built-in viewer based on PDF.js; Ctrl+S saves the current page. Passwords are saved,
 > autofilled and managed in about:logins; they are encrypted with a key protected by Windows DPAPI
-> and can be imported from Firefox. Not ready for everyday use.
+> and can be imported from Firefox. WebExtensions run with background pages, content scripts,
+> `storage`, `tabs`, `runtime` and toolbar buttons with popups; add-ons are managed in about:addons. Not ready for everyday use.
 
 The specification and architecture are in [docs/spec.md](docs/spec.md) (in Russian).
 
@@ -64,7 +65,8 @@ monthly breaking changes in Servo's API are fixed in one place.
 | `platform-win` | open a file, show it in Explorer | started |
 | `importer` | reads history, bookmarks and cookies from a Firefox profile | done for 0.2 |
 | `content-blocking` | tracking protection: Disconnect lists, Firefox's Standard and Strict rules, list updates | done for 0.3 |
-| `sync`, `remote-settings`, `extensions` | services and Windows integration | stubs, scheduled per the version plan |
+| `extensions` | WebExtensions: manifests, .xpi packages, match patterns, API host and the injected `browser.*` runtime | part 1 of 0.4 |
+| `sync`, `remote-settings` | services and Windows integration | stubs, scheduled per the version plan |
 
 ## License
 

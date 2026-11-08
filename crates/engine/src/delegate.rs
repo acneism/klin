@@ -10,11 +10,37 @@ use klin_shared::{Disposition, LoadStatus, RequestId, TabId, Url, WindowId};
 use servo::{
     AuthenticationRequest, ContextMenu, ContextMenuAction, ContextMenuItem,
     CreateNewWebViewRequest, DeviceIntRect, EmbedderControl, EmbedderControlId, FilePicker,
-    PermissionRequest, RenderingContext, SelectElement, SelectElementOptionOrOptgroup,
-    SimpleDialog, WebView, WebViewDelegate, WebViewId,
+    OffscreenRenderingContext, PermissionRequest, RenderingContext, SelectElement,
+    SelectElementOptionOrOptgroup, SimpleDialog, WebView, WebViewDelegate, WebViewId,
 };
 
 use crate::Surface;
+
+pub(crate) const POPUP_MAX: (f32, f32) = (800.0, 600.0);
+pub(crate) const POPUP_MIN: (f32, f32) = (25.0, 25.0);
+
+pub(crate) fn fit_popup(shared: &Rc<Shared>, window: WindowId, webview: &WebView) {
+    let Some(surface) = shared.surfaces.borrow().get(&window).cloned() else {
+        return;
+    };
+    let target = webview.clone();
+    let script = "JSON.stringify([Math.max(document.documentElement.scrollWidth, document.body ? document.body.scrollWidth : 0), Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0)])";
+    webview.evaluate_javascript(script, move |result| {
+        let Ok(servo::JSValue::String(json)) = result else {
+            return;
+        };
+        let Ok([width, height]) = serde_json::from_str::<[f32; 2]>(&json) else {
+            return;
+        };
+        let scale = surface.scale.get();
+        let width = width.clamp(POPUP_MIN.0, POPUP_MAX.0) * scale;
+        let height = height.clamp(POPUP_MIN.1, POPUP_MAX.1) * scale;
+        target.resize(dpi::PhysicalSize::new(
+            width.ceil() as u32,
+            height.ceil() as u32,
+        ));
+    });
+}
 use crate::protocol;
 
 #[derive(Default)]
@@ -32,6 +58,8 @@ pub(crate) struct Shared {
     pub blocker: RefCell<Option<klin_content_blocking::Blocker>>,
     pub pdf_viewer_disabled: Cell<bool>,
     pub user_content: RefCell<Option<Rc<servo::UserContentManager>>>,
+    pub popups: RefCell<HashMap<WindowId, TabId>>,
+    pub detached_contexts: RefCell<HashMap<TabId, Rc<OffscreenRenderingContext>>>,
 }
 
 impl Shared {
@@ -40,6 +68,19 @@ impl Shared {
         self.webviews.borrow_mut().insert(tab, webview);
         self.tab_window.borrow_mut().insert(tab, window);
         tab
+    }
+
+    pub fn register_detached(&self, webview: WebView, tab: TabId) {
+        self.tabs.borrow_mut().insert(webview.id(), tab);
+        self.webviews.borrow_mut().insert(tab, webview);
+    }
+
+    pub fn popup_window(&self, tab: TabId) -> Option<WindowId> {
+        self.popups
+            .borrow()
+            .iter()
+            .find(|(_, t)| **t == tab)
+            .map(|(w, _)| *w)
     }
 
     pub fn window_of(&self, tab: TabId) -> Option<WindowId> {
@@ -69,6 +110,8 @@ impl Shared {
 
         self.pending.borrow_mut().retain(|_, (t, _)| *t != tab);
         self.controls.borrow_mut().retain(|(_, t, _)| *t != tab);
+        self.popups.borrow_mut().retain(|_, t| *t != tab);
+        self.detached_contexts.borrow_mut().remove(&tab);
     }
 
     pub fn take(&self, id: RequestId) -> Option<(TabId, Pending)> {
@@ -250,6 +293,12 @@ impl WebViewDelegate for Delegate {
             servo::LoadStatus::HeadParsed => LoadStatus::HeadParsed,
             servo::LoadStatus::Complete => LoadStatus::Complete,
         };
+        if status == LoadStatus::Complete
+            && let Some(tab) = self.shared.tab(&webview)
+            && let Some(window) = self.shared.popup_window(tab)
+        {
+            fit_popup(&self.shared, window, &webview);
+        }
         self.with_tab(&webview, |tab| EngineEvent::LoadStatus { tab, status });
     }
 
