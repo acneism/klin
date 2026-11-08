@@ -234,10 +234,10 @@ fn details(ui: &mut egui::Ui, state: &mut LoginsState, actions: &mut Vec<Action>
     };
 
     ui.heading(site_name(&login.origin));
-    if ui.link(&login.origin).clicked() {
-        if let Ok(url) = klin_shared::Url::parse(&login.origin) {
-            actions.push(Action::OpenBookmark { url, new_tab: true });
-        }
+    if ui.link(&login.origin).clicked()
+        && let Ok(url) = klin_shared::Url::parse(&login.origin)
+    {
+        actions.push(Action::OpenBookmark { url, new_tab: true });
     }
     ui.add_space(10.0);
 
