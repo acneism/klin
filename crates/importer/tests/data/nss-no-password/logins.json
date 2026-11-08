@@ -1,0 +1,40 @@
+{
+ "nextId": 3,
+ "logins": [
+  {
+   "id": 1,
+   "hostname": "https://example.com",
+   "httpRealm": null,
+   "formSubmitURL": "https://example.com",
+   "usernameField": "user",
+   "passwordField": "pass",
+   "encryptedUsername": "MDIEEPgAAAAAAAAAAAAAAAAAAAEwFAYIKoZIhvcNAwcECOBNJJOVpQDVBAjjMXwFkMEqIw==",
+   "encryptedPassword": "MEIEEPgAAAAAAAAAAAAAAAAAAAEwFAYIKoZIhvcNAwcECB5lQMkq56CFBBg0YMbohh4LF8N/31kgZb43NlQvlCTquN4=",
+   "guid": "{11111111-2222-4333-8444-555555555555}",
+   "encType": 1,
+   "timeCreated": 1600000000000,
+   "timeLastUsed": 1700000000000,
+   "timePasswordChanged": 1650000000000,
+   "timesUsed": 5
+  },
+  {
+   "id": 2,
+   "hostname": "https://auth.example.org",
+   "httpRealm": "Protected",
+   "formSubmitURL": null,
+   "usernameField": "",
+   "passwordField": "",
+   "encryptedUsername": "MDIEEPgAAAAAAAAAAAAAAAAAAAEwFAYIKoZIhvcNAwcECDFd+rzSBiefBAiZic0uccrgUg==",
+   "encryptedPassword": "MDoEEPgAAAAAAAAAAAAAAAAAAAEwFAYIKoZIhvcNAwcECOnLeEJ4MuItBBAnPEeNV9fP06AFzpYsVYnt",
+   "guid": "{aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee}",
+   "encType": 1,
+   "timeCreated": 1600000000000,
+   "timeLastUsed": 1600000000000,
+   "timePasswordChanged": 1600000000000,
+   "timesUsed": 1
+  }
+ ],
+ "potentiallyVulnerablePasswords": [],
+ "dismissedBreachAlertsByLoginGUID": {},
+ "version": 3
+}

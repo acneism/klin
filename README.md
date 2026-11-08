@@ -22,7 +22,9 @@ shortcuts, data formats, settings.
 > downloads and all bookmark folders with search and deletion. Reader View (F9, Ctrl+Alt+R) uses
 > Mozilla's Readability.js and Firefox's reader styles. Tracking protection blocks third-party
 > trackers from the Disconnect lists Firefox uses, in Standard and Strict modes. PDF files open
-> in a built-in viewer based on PDF.js; Ctrl+S saves the current page. Not ready for everyday use.
+> in a built-in viewer based on PDF.js; Ctrl+S saves the current page. Passwords are saved,
+> autofilled and managed in about:logins; they are encrypted with a key protected by Windows DPAPI
+> and can be imported from Firefox. Not ready for everyday use.
 
 The specification and architecture are in [docs/spec.md](docs/spec.md) (in Russian).
 

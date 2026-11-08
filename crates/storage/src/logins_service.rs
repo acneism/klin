@@ -315,6 +315,17 @@ impl LoginsService {
         }
     }
 
+    pub fn importer(
+        &self,
+    ) -> impl FnOnce(Vec<ImportedLogin>, Callback<LoginsImportStats>) + Send + 'static {
+        let sender = self.sender.clone();
+        move |logins, reply| {
+            if let Some(sender) = &sender {
+                let _ = sender.send(Message::Import { logins, reply });
+            }
+        }
+    }
+
     pub fn list(&self, reply: impl FnOnce(Vec<SavedLogin>) + Send + 'static) {
         self.send(Message::List {
             reply: Box::new(reply),

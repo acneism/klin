@@ -162,6 +162,13 @@ impl BrowserWindow {
     }
 }
 
+type ImportDone = (
+    ImportStats,
+    usize,
+    klin_storage::LoginsImportStats,
+    Option<String>,
+);
+
 type AutofillReply = (TabId, String, Vec<klin_shared::logins::SavedLogin>);
 
 type OfferReply = (
@@ -243,8 +250,8 @@ struct Running {
     tracking_rx: Receiver<Arc<klin_content_blocking::Lists>>,
     import_rx: Receiver<Result<ImportedData, String>>,
     import_tx: Sender<Result<ImportedData, String>>,
-    import_done_rx: Receiver<(ImportStats, usize)>,
-    import_done_tx: Sender<(ImportStats, usize)>,
+    import_done_rx: Receiver<ImportDone>,
+    import_done_tx: Sender<ImportDone>,
     browser: Browser,
     shortcuts: Vec<(KeyChord, Command)>,
     engine: ServoEngine,
@@ -679,24 +686,38 @@ impl Running {
                     let cookies = self.engine.import_cookies(data.cookies);
                     let tx = self.import_done_tx.clone();
                     let proxy = self.proxy.clone();
+                    let logins_error = data.logins_error;
+                    let logins = data.logins;
+                    let import_logins = self.logins.importer();
                     self.places
                         .import(data.places, data.bookmarks, move |stats| {
-                            let _ = tx.send((stats, cookies));
-                            let _ = proxy.send_event(Wake);
+                            import_logins(
+                                logins,
+                                Box::new(move |login_stats| {
+                                    let _ = tx.send((stats, cookies, login_stats, logins_error));
+                                    let _ = proxy.send_event(Wake);
+                                }),
+                            );
                         });
                 }
                 Err(error) => self.notify_all(format!("Импорт из Firefox не удался: {error}")),
             }
         }
-        while let Ok((stats, cookies)) = self.import_done_rx.try_recv() {
+        while let Ok((stats, cookies, logins, logins_error)) = self.import_done_rx.try_recv() {
             self.refresh_toolbar();
-            self.notify_all(format!(
-                "Импортировано из Firefox: {} истории ({}), {}, {}.",
+            self.load_logins();
+            let mut text = format!(
+                "Импортировано из Firefox: {} истории ({}), {}, {}, {}.",
                 plural(stats.pages, "страница", "страницы", "страниц"),
                 plural(stats.visits, "посещение", "посещения", "посещений"),
                 plural(stats.bookmarks, "закладка", "закладки", "закладок"),
                 plural(cookies, "cookie", "cookies", "cookies"),
-            ));
+                plural(logins.added, "пароль", "пароля", "паролей"),
+            );
+            if let Some(error) = logins_error {
+                text.push_str(&format!(" Пароли не перенесены: {error}."));
+            }
+            self.notify_all(text);
         }
         while let Ok(request) = self.download_start_rx.try_recv() {
             self.downloads.start(request);

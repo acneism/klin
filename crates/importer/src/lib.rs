@@ -10,6 +10,8 @@ use klin_shared::import::{
 };
 use rusqlite::{Connection, OpenFlags};
 
+pub mod nss;
+
 #[derive(Debug, thiserror::Error)]
 pub enum ImportError {
     #[error("профиль Firefox не найден")]
@@ -106,8 +108,73 @@ pub fn import_profile(dir: &Path, temp: &Path) -> Result<ImportedData, ImportErr
         let path = dir.join("cookies.sqlite");
         data.cookies = read_cookies(&conn).map_err(|source| ImportError::Sql { path, source })?;
     }
+    if dir.join("logins.json").exists() && dir.join("key4.db").exists() {
+        match copy_key4(dir, temp).and_then(|key4| read_logins(dir, &key4)) {
+            Ok(logins) => data.logins = logins,
+            Err(error) => data.logins_error = Some(error.to_string()),
+        }
+    }
     let _ = fs::remove_dir_all(temp);
     Ok(data)
+}
+
+fn copy_key4(dir: &Path, temp: &Path) -> Result<PathBuf, nss::NssError> {
+    fs::create_dir_all(temp).map_err(|_| nss::NssError::Format)?;
+    for suffix in ["", "-wal"] {
+        let from = dir.join(format!("key4.db{suffix}"));
+        if from.exists() {
+            fs::copy(&from, temp.join(format!("key4.db{suffix}")))
+                .map_err(|_| nss::NssError::Format)?;
+        }
+    }
+    Ok(temp.join("key4.db"))
+}
+
+pub fn read_logins(
+    dir: &Path,
+    key4: &Path,
+) -> Result<Vec<klin_shared::logins::ImportedLogin>, nss::NssError> {
+    let key = nss::logins_key(key4, "")?;
+    let text = fs::read_to_string(dir.join("logins.json")).map_err(|_| nss::NssError::Format)?;
+    let json: serde_json::Value = serde_json::from_str(&text).map_err(|_| nss::NssError::Format)?;
+    let mut logins = Vec::new();
+    for entry in json
+        .get("logins")
+        .and_then(|l| l.as_array())
+        .into_iter()
+        .flatten()
+    {
+        let text = |key: &str| entry.get(key).and_then(|v| v.as_str()).map(str::to_owned);
+        let number = |key: &str| entry.get(key).and_then(|v| v.as_i64()).unwrap_or(0);
+        let (Some(origin), Some(username), Some(password)) = (
+            text("hostname"),
+            text("encryptedUsername"),
+            text("encryptedPassword"),
+        ) else {
+            continue;
+        };
+        let (Ok(username), Ok(password)) = (key.decrypt(&username), key.decrypt(&password)) else {
+            log::warn!("cannot decrypt a Firefox login for {origin}");
+            continue;
+        };
+        logins.push(klin_shared::logins::ImportedLogin {
+            input: klin_shared::logins::LoginInput {
+                origin,
+                form_action_origin: text("formSubmitURL"),
+                http_realm: text("httpRealm"),
+                username_field: text("usernameField").unwrap_or_default(),
+                password_field: text("passwordField").unwrap_or_default(),
+                username,
+                password,
+            },
+            guid: text("guid"),
+            time_created: number("timeCreated"),
+            time_last_used: number("timeLastUsed"),
+            time_password_changed: number("timePasswordChanged"),
+            times_used: number("timesUsed"),
+        });
+    }
+    Ok(logins)
 }
 
 fn open_copy(dir: &Path, name: &str, temp: &Path) -> Result<Connection, ImportError> {

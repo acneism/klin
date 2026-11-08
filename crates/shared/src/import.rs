@@ -66,4 +66,6 @@ pub struct ImportedData {
     pub places: Vec<ImportedPlace>,
     pub bookmarks: Vec<ImportedRoot>,
     pub cookies: Vec<ImportedCookie>,
+    pub logins: Vec<crate::logins::ImportedLogin>,
+    pub logins_error: Option<String>,
 }
