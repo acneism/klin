@@ -1,4 +1,5 @@
 pub mod content_prefs;
+pub mod logins;
 pub mod places;
 pub mod places_service;
 pub mod sessionstore;

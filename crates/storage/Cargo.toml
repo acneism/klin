@@ -26,6 +26,7 @@ thiserror.workspace = true
 anyhow = "1.0"
 rand = "0.8"
 base64 = "0.21"
+aes-gcm = "0.10.3"
 # mozlz4 (sessionstore.jsonlz4): блок LZ4 без кадра, реализация на Rust.
 lz4_flex = { version = "=0.14.0", default-features = false, features = ["std", "safe-encode", "safe-decode"] }
 log.workspace = true
@@ -39,3 +40,9 @@ tempfile = "3"
 [features]
 # Инструменты отладки SQL из sql-support (application-services).
 debug-tools = []
+# Возможности перенесённого logins (application-services), по умолчанию выключены.
+perform_additional_origin_fixups = []
+ignore_form_action_origin_validation_errors = []
+allow_empty_passwords = []
+keydb = []
+fixup_invalid_guids = []

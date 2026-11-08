@@ -1,0 +1,248 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+use crate::logins::error::*;
+use crate::support::sql::ConnExt;
+use lazy_static::lazy_static;
+use rusqlite::Connection;
+
+pub(super) const VERSION: i64 = 5;
+
+pub const COMMON_COLS: &str = "
+    guid,
+    secFields,
+    origin,
+    httpRealm,
+    formActionOrigin,
+    usernameField,
+    passwordField,
+    timeCreated,
+    timeLastUsed,
+    timePasswordChanged,
+    timesUsed,
+    timeLastBreachAlertDismissed
+";
+
+const COMMON_SQL: &str = "
+    id                                          INTEGER PRIMARY KEY AUTOINCREMENT,
+    origin                                      TEXT NOT NULL,
+    -- Exactly one of httpRealm or formActionOrigin should be set
+    httpRealm                                   TEXT,
+    formActionOrigin                            TEXT,
+    usernameField                               TEXT,
+    passwordField                               TEXT,
+    timesUsed                                   INTEGER NOT NULL DEFAULT 0,
+    timeCreated                                 INTEGER NOT NULL,
+    timeLastUsed                                INTEGER,
+    timePasswordChanged                         INTEGER NOT NULL,
+    timeLastBreachAlertDismissed                INTEGER,
+    secFields                                   TEXT,
+    guid                                        TEXT NOT NULL UNIQUE
+";
+
+lazy_static! {
+    static ref CREATE_LOCAL_TABLE_SQL: String = format!(
+        "CREATE TABLE IF NOT EXISTS loginsL (
+            {common_sql},
+
+            -- Milliseconds, or NULL if never modified locally.
+            local_modified INTEGER,
+
+            is_deleted     TINYINT NOT NULL DEFAULT 0,
+            sync_status    TINYINT NOT NULL DEFAULT 0
+        )",
+        common_sql = COMMON_SQL
+    );
+    static ref CREATE_MIRROR_TABLE_SQL: String = format!(
+        "CREATE TABLE IF NOT EXISTS loginsM (
+            {common_sql},
+            -- Milliseconds (a sync15::ServerTimestamp multiplied by
+            -- 1000 and truncated)
+            server_modified INTEGER NOT NULL,
+            is_overridden   TINYINT NOT NULL DEFAULT 0,
+            -- fields on incoming records we don't know about and roundtrip.
+            -- a serde_json::Value::Object as an encrypted string.
+            enc_unknown_fields   TEXT
+        )",
+        common_sql = COMMON_SQL
+    );
+    static ref SET_VERSION_SQL: String =
+        format!("PRAGMA user_version = {version}", version = VERSION);
+}
+
+const CREATE_META_TABLE_SQL: &str = "
+    CREATE TABLE IF NOT EXISTS loginsSyncMeta (
+        key TEXT PRIMARY KEY,
+        value NOT NULL
+    )
+";
+
+const CREATE_OVERRIDE_ORIGIN_INDEX_SQL: &str = "
+    CREATE INDEX IF NOT EXISTS idx_loginsM_is_overridden_origin
+    ON loginsM (is_overridden, origin)
+";
+
+const CREATE_DELETED_ORIGIN_INDEX_SQL: &str = "
+    CREATE INDEX IF NOT EXISTS idx_loginsL_is_deleted_origin
+    ON loginsL (is_deleted, origin)
+";
+
+const CREATE_LOCAL_BREACHES_TABLE_SQL: &str = "
+    CREATE TABLE IF NOT EXISTS breachesL (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        encryptedPassword TEXT
+    )
+";
+
+#[allow(dead_code)]
+pub(crate) static LAST_SYNC_META_KEY: &str = "last_sync_time";
+#[allow(dead_code)]
+pub(crate) static GLOBAL_SYNCID_META_KEY: &str = "global_sync_id";
+#[allow(dead_code)]
+pub(crate) static COLLECTION_SYNCID_META_KEY: &str = "passwords_sync_id";
+
+pub(crate) fn init(db: &Connection) -> Result<()> {
+    let user_version = db.conn_ext_query_one::<i64>("PRAGMA user_version")?;
+    if user_version == 0 {
+        return create(db);
+    }
+    if user_version != VERSION {
+        if user_version < VERSION {
+            upgrade(db, user_version)?;
+        } else {
+            warn!(
+                "Loaded future schema version {} (we only understand version {}). \
+                 Optimistically ",
+                user_version, VERSION
+            )
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::unnecessary_wraps)]
+fn upgrade(db: &Connection, from: i64) -> Result<()> {
+    debug!("Upgrading schema from {} to {}", from, VERSION);
+
+    if from == VERSION {
+        return Ok(());
+    }
+
+    for version in from..VERSION {
+        upgrade_from(db, version)?;
+    }
+
+    db.execute_batch(&SET_VERSION_SQL)?;
+    Ok(())
+}
+
+fn upgrade_from(db: &Connection, from: i64) -> Result<()> {
+    debug!("- running schema upgrade {}", from);
+
+    match from {
+        0 => Err(Error::IncompatibleVersion(from)),
+
+        1 => Ok(db.execute_batch("ALTER TABLE loginsM ADD enc_unknown_fields TEXT;")?),
+
+        2 => Ok(db.execute_batch(
+            "ALTER TABLE loginsL ADD timeOfLastBreach INTEGER;
+        ALTER TABLE loginsM ADD timeOfLastBreach INTEGER;
+        ALTER TABLE loginsL ADD timeLastBreachAlertDismissed INTEGER;
+        ALTER TABLE loginsM ADD timeLastBreachAlertDismissed INTEGER;",
+        )?),
+
+        3 => Ok(db.execute_batch(CREATE_LOCAL_BREACHES_TABLE_SQL)?),
+
+        4 => Ok(db.execute_batch(
+            "ALTER TABLE loginsL DROP COLUMN timeOfLastBreach;
+        ALTER TABLE loginsM DROP COLUMN timeOfLastBreach;",
+        )?),
+
+        _ => Err(Error::IncompatibleVersion(from)),
+    }
+}
+
+pub(crate) fn create(db: &Connection) -> Result<()> {
+    debug!("Creating schema");
+    db.execute_all(&[
+        &*CREATE_LOCAL_TABLE_SQL,
+        &*CREATE_MIRROR_TABLE_SQL,
+        CREATE_OVERRIDE_ORIGIN_INDEX_SQL,
+        CREATE_DELETED_ORIGIN_INDEX_SQL,
+        CREATE_META_TABLE_SQL,
+        CREATE_LOCAL_BREACHES_TABLE_SQL,
+        &*SET_VERSION_SQL,
+    ])?;
+    Ok(())
+}
+
+#[cfg(not(feature = "keydb"))]
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::logins::LoginDb;
+    use crate::logins::test_utils::TEST_ENCDEC;
+    use rusqlite::Connection;
+
+    const SCHEMA_V1: &str = r#"
+CREATE TABLE IF NOT EXISTS loginsL (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    origin              TEXT NOT NULL,
+    httpRealm           TEXT,
+    formActionOrigin    TEXT,
+    usernameField       TEXT,
+    passwordField       TEXT,
+    timesUsed           INTEGER NOT NULL DEFAULT 0,
+    timeCreated         INTEGER NOT NULL,
+    timeLastUsed        INTEGER,
+    timePasswordChanged INTEGER NOT NULL,
+    secFields           TEXT,
+
+    local_modified INTEGER,
+
+    is_deleted     TINYINT NOT NULL DEFAULT 0,
+    sync_status    TINYINT NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS loginsM (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    origin              TEXT NOT NULL,
+    httpRealm           TEXT,
+    formActionOrigin    TEXT,
+    usernameField       TEXT,
+    passwordField       TEXT,
+    timesUsed           INTEGER NOT NULL DEFAULT 0,
+    timeCreated         INTEGER NOT NULL,
+    timeLastUsed        INTEGER,
+    timePasswordChanged INTEGER NOT NULL,
+    secFields           TEXT,
+    guid                TEXT NOT NULL UNIQUE,
+    server_modified     INTEGER NOT NULL,
+    is_overridden       TINYINT NOT NULL DEFAULT 0
+);
+PRAGMA user_version=1;
+    "#;
+
+    #[test]
+    fn test_create_schema() {
+        let db = LoginDb::open_in_memory();
+
+        let version = db.conn_ext_query_one::<i64>("PRAGMA user_version").unwrap();
+        assert_eq!(version, VERSION);
+    }
+
+    #[test]
+    fn test_all_upgrades() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(SCHEMA_V1).unwrap();
+        let version = connection
+            .conn_ext_query_one::<i64>("PRAGMA user_version")
+            .unwrap();
+        assert_eq!(version, 1);
+
+        let db = LoginDb::with_connection(connection, TEST_ENCDEC.clone()).unwrap();
+
+        let version = db.conn_ext_query_one::<i64>("PRAGMA user_version").unwrap();
+        assert_eq!(version, VERSION);
+    }
+}

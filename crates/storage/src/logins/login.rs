@@ -1,0 +1,1229 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+use crate::logins::{error::*, util::sanitize_timestamp};
+use crate::support::crypto::EncryptorDecryptor;
+use crate::support::guid::Guid;
+use rusqlite::Row;
+use serde_derive::*;
+use url::Url;
+
+pub(crate) const FXA_CREDENTIALS_ORIGIN: &str = "chrome://FirefoxAccounts";
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Default)]
+pub struct LoginFields {
+    pub origin: String,
+    pub form_action_origin: Option<String>,
+    pub http_realm: Option<String>,
+    pub username_field: String,
+    pub password_field: String,
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SecureLoginFields {
+    #[serde(rename = "u")]
+    pub username: String,
+    #[serde(rename = "p")]
+    pub password: String,
+}
+
+impl SecureLoginFields {
+    pub fn encrypt(&self, encdec: &dyn EncryptorDecryptor, login_id: &str) -> Result<String> {
+        let string = serde_json::to_string(&self)?;
+        let cipherbytes = encdec
+            .encrypt(string.as_bytes().into())
+            .map_err(|e| Error::EncryptionFailed(format!("{e} (encrypting {login_id})")))?;
+        let ciphertext = std::str::from_utf8(&cipherbytes).map_err(|e| {
+            Error::EncryptionFailed(format!("{e} (encrypting {login_id}: data not utf8)"))
+        })?;
+        Ok(ciphertext.to_owned())
+    }
+
+    pub fn decrypt(
+        ciphertext: &str,
+        encdec: &dyn EncryptorDecryptor,
+        login_id: &str,
+    ) -> Result<Self> {
+        let jsonbytes = encdec.decrypt(ciphertext.as_bytes().into()).map_err(|e| {
+            Error::DecryptionFailed(format!(
+                "{e} (decrypting {login_id}, ciphertext length: {})",
+                ciphertext.len(),
+            ))
+        })?;
+        let json =
+            std::str::from_utf8(&jsonbytes).map_err(|e| Error::DecryptionFailed(e.to_string()))?;
+        Ok(serde_json::from_str(json)?)
+    }
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Default)]
+pub struct LoginMeta {
+    pub id: String,
+    pub time_created: i64,
+    pub time_password_changed: i64,
+    pub time_last_used: i64,
+    pub times_used: i64,
+    pub time_last_breach_alert_dismissed: Option<i64>,
+}
+
+impl LoginMeta {
+    pub(crate) fn sanitize_timestamps(self) -> Self {
+        Self {
+            time_created: sanitize_timestamp(self.time_created),
+            time_password_changed: sanitize_timestamp(self.time_password_changed),
+            time_last_used: sanitize_timestamp(self.time_last_used),
+            time_last_breach_alert_dismissed: self
+                .time_last_breach_alert_dismissed
+                .map(sanitize_timestamp),
+            ..self
+        }
+    }
+}
+
+pub struct LoginEntryWithMeta {
+    pub entry: LoginEntry,
+    pub meta: LoginMeta,
+}
+
+#[allow(clippy::large_enum_variant)]
+pub enum BulkResultEntry {
+    Success { login: Login },
+    Error { message: String },
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Default)]
+pub struct LoginEntry {
+    pub origin: String,
+    pub form_action_origin: Option<String>,
+    pub http_realm: Option<String>,
+    pub username_field: String,
+    pub password_field: String,
+
+    pub username: String,
+    pub password: String,
+}
+
+#[cfg(feature = "perform_additional_origin_fixups")]
+mod origin_fixup {
+    fn looks_like_bare_ipv4(s: &str) -> bool {
+        let parts: Vec<&str> = s.split('.').collect();
+        parts.len() == 4 && parts.iter().all(|p| p.parse::<u8>().is_ok())
+    }
+
+    fn looks_like_bare_domain(s: &str) -> bool {
+        let parts: Vec<&str> = s.split('.').collect();
+        parts.len() >= 2
+            && parts
+                .iter()
+                .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+    }
+
+    fn looks_like_bare_label(s: &str) -> bool {
+        !s.is_empty()
+            && !s.contains('.')
+            && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    }
+
+    pub fn perform_additional_origin_fixup(origin: &str) -> Option<String> {
+        if matches!(origin, "https:" | "https:/" | "https://") {
+            return Some("https://moz.pwmngr.fixed".to_string());
+        }
+
+        if let Some(rest) = origin.strip_prefix("http://ftp.") {
+            let host = rest.split(':').next().unwrap_or(rest);
+            if looks_like_bare_ipv4(host) {
+                return Some(format!("ftp://{rest}"));
+            }
+        }
+
+        if let Some(rest) = origin.strip_prefix("ftp.") {
+            if looks_like_bare_ipv4(rest) {
+                return Some(format!("ftp://{rest}"));
+            } else if looks_like_bare_domain(rest) {
+                return Some(format!("ftp://{origin}"));
+            }
+        }
+
+        if looks_like_bare_domain(origin) || looks_like_bare_label(origin) {
+            return Some(format!("moz-pwmngr-fixed://{origin}"));
+        }
+
+        None
+    }
+}
+
+impl LoginEntry {
+    pub fn new(fields: LoginFields, sec_fields: SecureLoginFields) -> Self {
+        Self {
+            origin: fields.origin,
+            form_action_origin: fields.form_action_origin,
+            http_realm: fields.http_realm,
+            username_field: fields.username_field,
+            password_field: fields.password_field,
+
+            username: sec_fields.username,
+            password: sec_fields.password,
+        }
+    }
+
+    fn parse_and_normalize_origin(origin: &str) -> Result<Option<String>> {
+        match Url::parse(origin) {
+            Ok(mut u) => {
+                if u.path() != "/"
+                    || u.fragment().is_some()
+                    || u.query().is_some()
+                    || u.username() != "/"
+                    || u.password().is_some()
+                {
+                    if u.scheme() == "file" {
+                        return Ok(if origin == "file://" {
+                            None
+                        } else {
+                            Some("file://".into())
+                        });
+                    }
+                    u.set_path("");
+                    u.set_fragment(None);
+                    u.set_query(None);
+                    let _ = u.set_username("");
+                    let _ = u.set_password(None);
+                    let mut href = String::from(u);
+
+                    if href.ends_with('/') {
+                        href.pop().expect("url must have a length");
+                    }
+                    if origin != href {
+                        return Ok(Some(href));
+                    }
+                }
+                Ok(None)
+            }
+            Err(e) => {
+                debug!("Error parsing login origin: {e:?}");
+                Err(InvalidLogin::IllegalOrigin {
+                    reason: e.to_string(),
+                }
+                .into())
+            }
+        }
+    }
+
+    pub fn validate_and_fixup_origin(origin: &str) -> Result<Option<String>> {
+        match Self::parse_and_normalize_origin(origin) {
+            Ok(result) => Ok(result),
+            Err(e) => {
+                #[cfg(feature = "perform_additional_origin_fixups")]
+                if let Some(fixed) = origin_fixup::perform_additional_origin_fixup(origin) {
+                    if Url::parse(&fixed).is_ok() {
+                        return Ok(Some(fixed));
+                    }
+                }
+                Err(e)
+            }
+        }
+    }
+
+    pub fn validate_and_normalize_form_action_origin(
+        form_action_origin: &str,
+    ) -> Result<Option<String>> {
+        match Self::parse_and_normalize_origin(form_action_origin) {
+            Ok(result) => Ok(result),
+            #[cfg(feature = "ignore_form_action_origin_validation_errors")]
+            Err(_) => Ok(None),
+            #[cfg(not(feature = "ignore_form_action_origin_validation_errors"))]
+            Err(e) => Err(e),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Default)]
+pub struct Login {
+    pub id: String,
+    pub time_created: i64,
+    pub time_password_changed: i64,
+    pub time_last_used: i64,
+    pub times_used: i64,
+
+    pub time_last_breach_alert_dismissed: Option<i64>,
+
+    pub origin: String,
+    pub form_action_origin: Option<String>,
+    pub http_realm: Option<String>,
+    pub username_field: String,
+    pub password_field: String,
+
+    pub username: String,
+    pub password: String,
+}
+
+impl Login {
+    pub fn new(meta: LoginMeta, fields: LoginFields, sec_fields: SecureLoginFields) -> Self {
+        Self {
+            id: meta.id,
+            time_created: meta.time_created,
+            time_password_changed: meta.time_password_changed,
+            time_last_used: meta.time_last_used,
+            times_used: meta.times_used,
+            time_last_breach_alert_dismissed: meta.time_last_breach_alert_dismissed,
+
+            origin: fields.origin,
+            form_action_origin: fields.form_action_origin,
+            http_realm: fields.http_realm,
+            username_field: fields.username_field,
+            password_field: fields.password_field,
+
+            username: sec_fields.username,
+            password: sec_fields.password,
+        }
+    }
+
+    #[inline]
+    pub fn guid(&self) -> Guid {
+        Guid::from_string(self.id.clone())
+    }
+
+    pub fn entry(&self) -> LoginEntry {
+        LoginEntry {
+            origin: self.origin.clone(),
+            form_action_origin: self.form_action_origin.clone(),
+            http_realm: self.http_realm.clone(),
+            username_field: self.username_field.clone(),
+            password_field: self.password_field.clone(),
+
+            username: self.username.clone(),
+            password: self.password.clone(),
+        }
+    }
+
+    pub fn encrypt(self, encdec: &dyn EncryptorDecryptor) -> Result<EncryptedLogin> {
+        let sec_fields = SecureLoginFields {
+            username: self.username,
+            password: self.password,
+        }
+        .encrypt(encdec, &self.id)?;
+        Ok(EncryptedLogin {
+            meta: LoginMeta {
+                id: self.id,
+                time_created: self.time_created,
+                time_password_changed: self.time_password_changed,
+                time_last_used: self.time_last_used,
+                times_used: self.times_used,
+                time_last_breach_alert_dismissed: self.time_last_breach_alert_dismissed,
+            },
+            fields: LoginFields {
+                origin: self.origin,
+                form_action_origin: self.form_action_origin,
+                http_realm: self.http_realm,
+                username_field: self.username_field,
+                password_field: self.password_field,
+            },
+            sec_fields,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Default)]
+pub struct EncryptedLogin {
+    pub meta: LoginMeta,
+    pub fields: LoginFields,
+    pub sec_fields: String,
+}
+
+impl EncryptedLogin {
+    #[inline]
+    pub fn guid(&self) -> Guid {
+        Guid::from_string(self.meta.id.clone())
+    }
+
+    #[inline]
+    pub fn guid_str(&self) -> &str {
+        &self.meta.id
+    }
+
+    pub fn decrypt(self, encdec: &dyn EncryptorDecryptor) -> Result<Login> {
+        let sec_fields = self.decrypt_fields(encdec)?;
+        Ok(Login::new(self.meta, self.fields, sec_fields))
+    }
+
+    pub fn decrypt_fields(&self, encdec: &dyn EncryptorDecryptor) -> Result<SecureLoginFields> {
+        SecureLoginFields::decrypt(&self.sec_fields, encdec, &self.meta.id)
+    }
+
+    pub(crate) fn from_row(row: &Row<'_>) -> Result<EncryptedLogin> {
+        let login = EncryptedLogin {
+            meta: LoginMeta {
+                id: row.get("guid")?,
+                time_created: row.get("timeCreated")?,
+
+                time_last_used: row
+                    .get::<_, Option<i64>>("timeLastUsed")?
+                    .unwrap_or_default(),
+
+                time_password_changed: row.get("timePasswordChanged")?,
+                times_used: row.get("timesUsed")?,
+
+                time_last_breach_alert_dismissed: row
+                    .get::<_, Option<i64>>("timeLastBreachAlertDismissed")?,
+            },
+            fields: LoginFields {
+                origin: row.get("origin")?,
+                http_realm: row.get("httpRealm")?,
+
+                form_action_origin: row.get("formActionOrigin")?,
+
+                username_field: string_or_default(row, "usernameField")?,
+                password_field: string_or_default(row, "passwordField")?,
+            },
+            sec_fields: row.get("secFields")?,
+        };
+
+        Ok(EncryptedLogin {
+            meta: login.meta.sanitize_timestamps(),
+            ..login
+        })
+    }
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Default)]
+pub struct LoginCandidate {
+    pub id: String,
+    pub time_created: i64,
+    pub time_password_changed: i64,
+    pub time_last_used: i64,
+    pub times_used: i64,
+
+    pub time_last_breach_alert_dismissed: Option<i64>,
+
+    pub origin: String,
+    pub form_action_origin: Option<String>,
+    pub http_realm: Option<String>,
+    pub username_field: String,
+    pub password_field: String,
+}
+
+impl From<EncryptedLogin> for LoginCandidate {
+    fn from(login: EncryptedLogin) -> Self {
+        let EncryptedLogin { meta, fields, .. } = login;
+        Self {
+            id: meta.id,
+            time_created: meta.time_created,
+            time_password_changed: meta.time_password_changed,
+            time_last_used: meta.time_last_used,
+            times_used: meta.times_used,
+            time_last_breach_alert_dismissed: meta.time_last_breach_alert_dismissed,
+
+            origin: fields.origin,
+            form_action_origin: fields.form_action_origin,
+            http_realm: fields.http_realm,
+            username_field: fields.username_field,
+            password_field: fields.password_field,
+        }
+    }
+}
+
+fn string_or_default(row: &Row<'_>, col: &str) -> Result<String> {
+    Ok(row.get::<_, Option<String>>(col)?.unwrap_or_default())
+}
+
+pub trait ValidateAndFixup {
+    fn check_valid(&self) -> Result<()>
+    where
+        Self: Sized,
+    {
+        self.validate_and_fixup(false)?;
+        Ok(())
+    }
+
+    fn fixup(self) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        match self.maybe_fixup()? {
+            None => Ok(self),
+            Some(login) => Ok(login),
+        }
+    }
+
+    fn maybe_fixup(&self) -> Result<Option<Self>>
+    where
+        Self: Sized,
+    {
+        self.validate_and_fixup(true)
+    }
+
+    fn validate_and_fixup(&self, fixup: bool) -> Result<Option<Self>>
+    where
+        Self: Sized;
+}
+
+impl ValidateAndFixup for LoginEntry {
+    fn validate_and_fixup(&self, fixup: bool) -> Result<Option<Self>> {
+        let mut maybe_fixed = None;
+
+        macro_rules! get_fixed_or_throw {
+            ($err:expr) => {{
+                if !fixup {
+                    return Err($err.into());
+                }
+                warn!("Fixing login record {:?}", $err);
+                let fixed: Result<&mut Self> = Ok(maybe_fixed.get_or_insert_with(|| self.clone()));
+                fixed
+            }};
+        }
+
+        if self.origin.is_empty() {
+            return Err(InvalidLogin::EmptyOrigin.into());
+        }
+
+        if self.form_action_origin.is_some() && self.http_realm.is_some() {
+            get_fixed_or_throw!(InvalidLogin::BothTargets)?.http_realm = None;
+        }
+
+        if self.form_action_origin.is_none() && self.http_realm.is_none() {
+            return Err(InvalidLogin::NoTarget.into());
+        }
+
+        let form_action_origin = self.form_action_origin.clone().unwrap_or_default();
+        let http_realm = maybe_fixed
+            .as_ref()
+            .unwrap_or(self)
+            .http_realm
+            .clone()
+            .unwrap_or_default();
+
+        let field_data = [
+            ("form_action_origin", &form_action_origin),
+            ("http_realm", &http_realm),
+            ("origin", &self.origin),
+            ("username_field", &self.username_field),
+            ("password_field", &self.password_field),
+        ];
+
+        for (field_name, field_value) in &field_data {
+            if field_value.contains('\0') {
+                return Err(InvalidLogin::IllegalFieldValue {
+                    field_info: format!("`{}` contains Nul", field_name),
+                }
+                .into());
+            }
+
+            if field_value.contains('\n') || field_value.contains('\r') {
+                return Err(InvalidLogin::IllegalFieldValue {
+                    field_info: format!("`{}` contains newline", field_name),
+                }
+                .into());
+            }
+        }
+
+        if self.username_field == "." {
+            return Err(InvalidLogin::IllegalFieldValue {
+                field_info: "`username_field` is a period".into(),
+            }
+            .into());
+        }
+
+        if let Some(fixed) = Self::validate_and_fixup_origin(&self.origin)? {
+            get_fixed_or_throw!(InvalidLogin::IllegalFieldValue {
+                field_info: "Origin is not normalized".into()
+            })?
+            .origin = fixed;
+        }
+
+        match &maybe_fixed.as_ref().unwrap_or(self).form_action_origin {
+            None => {
+                if !self.username_field.is_empty() {
+                    get_fixed_or_throw!(InvalidLogin::IllegalFieldValue {
+                        field_info: "username_field must be empty when form_action_origin is null"
+                            .into()
+                    })?
+                    .username_field
+                    .clear();
+                }
+                if !self.password_field.is_empty() {
+                    get_fixed_or_throw!(InvalidLogin::IllegalFieldValue {
+                        field_info: "password_field must be empty when form_action_origin is null"
+                            .into()
+                    })?
+                    .password_field
+                    .clear();
+                }
+            }
+            Some(href) => {
+                if href == "." {
+                    if fixup {
+                        maybe_fixed
+                            .get_or_insert_with(|| self.clone())
+                            .form_action_origin = Some("".into());
+                    }
+                } else if !href.is_empty() && href != "javascript:" {
+                    match Self::validate_and_normalize_form_action_origin(href) {
+                        Ok(Some(fixed)) => {
+                            get_fixed_or_throw!(InvalidLogin::IllegalFieldValue {
+                                field_info: "form_action_origin is not normalized".into()
+                            })?
+                            .form_action_origin = Some(fixed);
+                        }
+                        Ok(None) => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+            }
+        }
+
+        if self.username.contains('\0') {
+            return Err(InvalidLogin::IllegalFieldValue {
+                field_info: "`username` contains Nul".into(),
+            }
+            .into());
+        }
+
+        #[cfg(not(feature = "allow_empty_passwords"))]
+        if self.password.is_empty() {
+            return Err(InvalidLogin::EmptyPassword.into());
+        }
+        if self.password.contains('\0') {
+            return Err(InvalidLogin::IllegalFieldValue {
+                field_info: "`password` contains Nul".into(),
+            }
+            .into());
+        }
+
+        Ok(maybe_fixed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_url_fixups() -> Result<()> {
+        for input in &[
+            "https://site.com",
+            "http://site.com:1234",
+            "ftp://ftp.site.com",
+            "moz-proxy://127.0.0.1:8888",
+            "chrome://MyLegacyExtension",
+            "file://",
+            "https://[::1]",
+        ] {
+            assert_eq!(LoginEntry::validate_and_fixup_origin(input)?, None);
+        }
+
+        for (input, output) in &[
+            ("https://site.com/", "https://site.com"),
+            ("http://site.com:1234/", "http://site.com:1234"),
+            ("http://example.com/foo?query=wtf#bar", "http://example.com"),
+            ("http://example.com/foo#bar", "http://example.com"),
+            (
+                "http://username:password@example.com/",
+                "http://example.com",
+            ),
+            ("http://😍.com/", "http://xn--r28h.com"),
+            ("https://[0:0:0:0:0:0:0:1]", "https://[::1]"),
+            ("file:///", "file://"),
+            ("file://foo/bar", "file://"),
+            ("file://foo/bar/", "file://"),
+            ("moz-proxy://127.0.0.1:8888/", "moz-proxy://127.0.0.1:8888"),
+            (
+                "moz-proxy://127.0.0.1:8888/foo",
+                "moz-proxy://127.0.0.1:8888",
+            ),
+            ("chrome://MyLegacyExtension/", "chrome://MyLegacyExtension"),
+            (
+                "chrome://MyLegacyExtension/foo",
+                "chrome://MyLegacyExtension",
+            ),
+        ] {
+            assert_eq!(
+                LoginEntry::validate_and_fixup_origin(input)?,
+                Some((*output).into())
+            );
+        }
+
+        {
+            let input = &".";
+            assert!(LoginEntry::validate_and_fixup_origin(input).is_err());
+        }
+
+        #[cfg(not(feature = "perform_additional_origin_fixups"))]
+        for input in &["example.com", "example"] {
+            assert!(LoginEntry::validate_and_fixup_origin(input).is_err());
+        }
+        #[cfg(feature = "perform_additional_origin_fixups")]
+        {
+            assert_eq!(
+                LoginEntry::validate_and_fixup_origin("example.com")?,
+                Some("moz-pwmngr-fixed://example.com".into())
+            );
+            assert_eq!(
+                LoginEntry::validate_and_fixup_origin("example")?,
+                Some("moz-pwmngr-fixed://example".into())
+            );
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "perform_additional_origin_fixups")]
+    #[test]
+    fn test_additional_origin_fixups() -> Result<()> {
+        for input in &[
+            "https://example.com",
+            "http://example.com:8080",
+            "ftp://ftp.example.com",
+            "moz-pwmngr-fixed://example.com",
+            "moz-pwmngr-fixed://foo.bar",
+        ] {
+            assert_eq!(
+                LoginEntry::validate_and_fixup_origin(input)?,
+                None,
+                "expected no change for: {input}"
+            );
+        }
+
+        for input in &["https:", "https:/", "https://"] {
+            assert_eq!(
+                LoginEntry::validate_and_fixup_origin(input)?,
+                Some("https://moz.pwmngr.fixed".into()),
+                "input: {input}"
+            );
+        }
+
+        assert_eq!(
+            LoginEntry::validate_and_fixup_origin("http://ftp.1.2.3.4")?,
+            Some("ftp://1.2.3.4".into())
+        );
+        assert_eq!(
+            LoginEntry::validate_and_fixup_origin("http://ftp.1.2.3.4:21")?,
+            Some("ftp://1.2.3.4:21".into())
+        );
+
+        assert_eq!(
+            LoginEntry::validate_and_fixup_origin("ftp.1.2.3.4")?,
+            Some("ftp://1.2.3.4".into())
+        );
+
+        assert_eq!(
+            LoginEntry::validate_and_fixup_origin("ftp.example.com")?,
+            Some("ftp://ftp.example.com".into())
+        );
+
+        assert_eq!(
+            LoginEntry::validate_and_fixup_origin("1.2.3.4")?,
+            Some("moz-pwmngr-fixed://1.2.3.4".into())
+        );
+
+        for (input, output) in &[
+            ("example.com", "moz-pwmngr-fixed://example.com"),
+            ("sub.example.com", "moz-pwmngr-fixed://sub.example.com"),
+            ("foo.bar", "moz-pwmngr-fixed://foo.bar"),
+        ] {
+            assert_eq!(
+                LoginEntry::validate_and_fixup_origin(input)?,
+                Some((*output).into()),
+                "input: {input}"
+            );
+        }
+
+        assert_eq!(
+            LoginEntry::validate_and_fixup_origin("example")?,
+            Some("moz-pwmngr-fixed://example".into())
+        );
+
+        assert!(LoginEntry::validate_and_fixup_origin(".").is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_form_action_origin_normalizes_valid_urls() -> Result<()> {
+        assert_eq!(
+            LoginEntry::validate_and_normalize_form_action_origin("https://example.com")?,
+            None
+        );
+
+        assert_eq!(
+            LoginEntry::validate_and_normalize_form_action_origin("https://example.com/foo?x=1")?,
+            Some("https://example.com".into())
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "perform_additional_origin_fixups")]
+    #[test]
+    fn test_form_action_origin_skips_additional_fixups() {
+        for input in &[
+            "example.com",
+            "example",
+            "1.2.3.4",
+            "https:",
+            "ftp.example.com",
+        ] {
+            let result = LoginEntry::validate_and_normalize_form_action_origin(input);
+
+            #[cfg(feature = "ignore_form_action_origin_validation_errors")]
+            assert_eq!(result.unwrap(), None, "input: {input}");
+            #[cfg(not(feature = "ignore_form_action_origin_validation_errors"))]
+            assert!(result.is_err(), "input: {input}");
+        }
+    }
+
+    #[test]
+    #[cfg(not(feature = "ignore_form_action_origin_validation_errors"))]
+    fn test_form_action_origin_rejects_invalid() {
+        assert!(LoginEntry::validate_and_normalize_form_action_origin("email").is_err());
+    }
+
+    #[test]
+    #[cfg(feature = "ignore_form_action_origin_validation_errors")]
+    fn test_form_action_origin_accepts_invalid_with_feature() {
+        assert_eq!(
+            LoginEntry::validate_and_normalize_form_action_origin("email").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn test_check_valid() {
+        #[derive(Debug, Clone)]
+        struct TestCase {
+            login: LoginEntry,
+            should_err: bool,
+            expected_err: &'static str,
+        }
+
+        let valid_login = LoginEntry {
+            origin: "https://www.example.com".into(),
+            http_realm: Some("https://www.example.com".into()),
+            username: "test".into(),
+            password: "test".into(),
+            ..Default::default()
+        };
+
+        let login_with_empty_origin = LoginEntry {
+            origin: "".into(),
+            http_realm: Some("https://www.example.com".into()),
+            username: "test".into(),
+            password: "test".into(),
+            ..Default::default()
+        };
+
+        let login_with_empty_password = LoginEntry {
+            origin: "https://www.example.com".into(),
+            http_realm: Some("https://www.example.com".into()),
+            username: "test".into(),
+            password: "".into(),
+            ..Default::default()
+        };
+
+        let login_with_form_submit_and_http_realm = LoginEntry {
+            origin: "https://www.example.com".into(),
+            http_realm: Some("https://www.example.com".into()),
+            form_action_origin: Some("https://www.example.com".into()),
+            username: "".into(),
+            password: "test".into(),
+            ..Default::default()
+        };
+
+        let login_without_form_submit_or_http_realm = LoginEntry {
+            origin: "https://www.example.com".into(),
+            username: "".into(),
+            password: "test".into(),
+            ..Default::default()
+        };
+
+        let login_with_legacy_form_submit_and_http_realm = LoginEntry {
+            origin: "https://www.example.com".into(),
+            form_action_origin: Some("".into()),
+            username: "".into(),
+            password: "test".into(),
+            ..Default::default()
+        };
+
+        let login_with_null_http_realm = LoginEntry {
+            origin: "https://www.example.com".into(),
+            http_realm: Some("https://www.example.\0com".into()),
+            username: "test".into(),
+            password: "test".into(),
+            ..Default::default()
+        };
+
+        let login_with_null_username = LoginEntry {
+            origin: "https://www.example.com".into(),
+            http_realm: Some("https://www.example.com".into()),
+            username: "\0".into(),
+            password: "test".into(),
+            ..Default::default()
+        };
+
+        let login_with_null_password = LoginEntry {
+            origin: "https://www.example.com".into(),
+            http_realm: Some("https://www.example.com".into()),
+            username: "username".into(),
+            password: "test\0".into(),
+            ..Default::default()
+        };
+
+        let login_with_newline_origin = LoginEntry {
+            origin: "\rhttps://www.example.com".into(),
+            http_realm: Some("https://www.example.com".into()),
+            username: "test".into(),
+            password: "test".into(),
+            ..Default::default()
+        };
+
+        let login_with_newline_username_field = LoginEntry {
+            origin: "https://www.example.com".into(),
+            http_realm: Some("https://www.example.com".into()),
+            username_field: "\n".into(),
+            username: "test".into(),
+            password: "test".into(),
+            ..Default::default()
+        };
+
+        let login_with_newline_realm = LoginEntry {
+            origin: "https://www.example.com".into(),
+            http_realm: Some("foo\nbar".into()),
+            username: "test".into(),
+            password: "test".into(),
+            ..Default::default()
+        };
+
+        let login_with_newline_password = LoginEntry {
+            origin: "https://www.example.com".into(),
+            http_realm: Some("https://www.example.com".into()),
+            username: "test".into(),
+            password: "test\n".into(),
+            ..Default::default()
+        };
+
+        let login_with_period_username_field = LoginEntry {
+            origin: "https://www.example.com".into(),
+            http_realm: Some("https://www.example.com".into()),
+            username_field: ".".into(),
+            username: "test".into(),
+            password: "test".into(),
+            ..Default::default()
+        };
+
+        let login_with_period_form_action_origin = LoginEntry {
+            form_action_origin: Some(".".into()),
+            origin: "https://www.example.com".into(),
+            username: "test".into(),
+            password: "test".into(),
+            ..Default::default()
+        };
+
+        let login_with_javascript_form_action_origin = LoginEntry {
+            form_action_origin: Some("javascript:".into()),
+            origin: "https://www.example.com".into(),
+            username: "test".into(),
+            password: "test".into(),
+            ..Default::default()
+        };
+
+        let login_with_malformed_origin_parens = LoginEntry {
+            origin: " (".into(),
+            http_realm: Some("https://www.example.com".into()),
+            username: "test".into(),
+            password: "test".into(),
+            ..Default::default()
+        };
+
+        let login_with_host_unicode = LoginEntry {
+            origin: "http://💖.com".into(),
+            http_realm: Some("https://www.example.com".into()),
+            username: "test".into(),
+            password: "test".into(),
+            ..Default::default()
+        };
+
+        let login_with_origin_trailing_slash = LoginEntry {
+            origin: "https://www.example.com/".into(),
+            http_realm: Some("https://www.example.com".into()),
+            username: "test".into(),
+            password: "test".into(),
+            ..Default::default()
+        };
+
+        let login_with_origin_expanded_ipv6 = LoginEntry {
+            origin: "https://[0:0:0:0:0:0:1:1]".into(),
+            http_realm: Some("https://www.example.com".into()),
+            username: "test".into(),
+            password: "test".into(),
+            ..Default::default()
+        };
+
+        let login_with_unknown_protocol = LoginEntry {
+            origin: "moz-proxy://127.0.0.1:8888".into(),
+            http_realm: Some("https://www.example.com".into()),
+            username: "test".into(),
+            password: "test".into(),
+            ..Default::default()
+        };
+
+        let test_cases = [
+            TestCase {
+                login: valid_login,
+                should_err: false,
+                expected_err: "",
+            },
+            TestCase {
+                login: login_with_empty_origin,
+                should_err: true,
+                expected_err: "Invalid login: Origin is empty",
+            },
+            TestCase {
+                login: login_with_empty_password,
+                should_err: cfg!(not(feature = "allow_empty_passwords")),
+                expected_err: "Invalid login: Password is empty",
+            },
+            TestCase {
+                login: login_with_form_submit_and_http_realm,
+                should_err: true,
+                expected_err: "Invalid login: Both `formActionOrigin` and `httpRealm` are present",
+            },
+            TestCase {
+                login: login_without_form_submit_or_http_realm,
+                should_err: true,
+                expected_err: "Invalid login: Neither `formActionOrigin` or `httpRealm` are present",
+            },
+            TestCase {
+                login: login_with_null_http_realm,
+                should_err: true,
+                expected_err: "Invalid login: Login has illegal field: `http_realm` contains Nul",
+            },
+            TestCase {
+                login: login_with_null_username,
+                should_err: true,
+                expected_err: "Invalid login: Login has illegal field: `username` contains Nul",
+            },
+            TestCase {
+                login: login_with_null_password,
+                should_err: true,
+                expected_err: "Invalid login: Login has illegal field: `password` contains Nul",
+            },
+            TestCase {
+                login: login_with_newline_origin,
+                should_err: true,
+                expected_err: "Invalid login: Login has illegal field: `origin` contains newline",
+            },
+            TestCase {
+                login: login_with_newline_realm,
+                should_err: true,
+                expected_err: "Invalid login: Login has illegal field: `http_realm` contains newline",
+            },
+            TestCase {
+                login: login_with_newline_username_field,
+                should_err: true,
+                expected_err: "Invalid login: Login has illegal field: `username_field` contains newline",
+            },
+            TestCase {
+                login: login_with_newline_password,
+                should_err: false,
+                expected_err: "",
+            },
+            TestCase {
+                login: login_with_period_username_field,
+                should_err: true,
+                expected_err: "Invalid login: Login has illegal field: `username_field` is a period",
+            },
+            TestCase {
+                login: login_with_period_form_action_origin,
+                should_err: false,
+                expected_err: "",
+            },
+            TestCase {
+                login: login_with_javascript_form_action_origin,
+                should_err: false,
+                expected_err: "",
+            },
+            TestCase {
+                login: login_with_malformed_origin_parens,
+                should_err: true,
+                expected_err: "Invalid login: Login has illegal origin: relative URL without a base",
+            },
+            TestCase {
+                login: login_with_host_unicode,
+                should_err: true,
+                expected_err: "Invalid login: Login has illegal field: Origin is not normalized",
+            },
+            TestCase {
+                login: login_with_origin_trailing_slash,
+                should_err: true,
+                expected_err: "Invalid login: Login has illegal field: Origin is not normalized",
+            },
+            TestCase {
+                login: login_with_origin_expanded_ipv6,
+                should_err: true,
+                expected_err: "Invalid login: Login has illegal field: Origin is not normalized",
+            },
+            TestCase {
+                login: login_with_unknown_protocol,
+                should_err: false,
+                expected_err: "",
+            },
+            TestCase {
+                login: login_with_legacy_form_submit_and_http_realm,
+                should_err: false,
+                expected_err: "",
+            },
+        ];
+
+        for tc in &test_cases {
+            let actual = tc.login.check_valid();
+
+            if tc.should_err {
+                assert!(actual.is_err(), "{:#?}", tc);
+                assert_eq!(
+                    tc.expected_err,
+                    actual.unwrap_err().to_string(),
+                    "{:#?}",
+                    tc,
+                );
+            } else {
+                assert!(actual.is_ok(), "{:#?}", tc);
+                assert!(
+                    tc.login.clone().fixup().is_ok(),
+                    "Fixup failed after check_valid passed: {:#?}",
+                    tc,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_fixup() {
+        #[derive(Debug, Default)]
+        struct TestCase {
+            login: LoginEntry,
+            fixedup_host: Option<&'static str>,
+            fixedup_form_action_origin: Option<String>,
+        }
+
+        let login_with_full_url = LoginEntry {
+            origin: "http://example.com/foo?query=wtf#bar".into(),
+            form_action_origin: Some("http://example.com/foo?query=wtf#bar".into()),
+            username: "test".into(),
+            password: "test".into(),
+            ..Default::default()
+        };
+
+        let login_with_host_unicode = LoginEntry {
+            origin: "http://😍.com".into(),
+            form_action_origin: Some("http://😍.com".into()),
+            username: "test".into(),
+            password: "test".into(),
+            ..Default::default()
+        };
+
+        let login_with_period_fsu = LoginEntry {
+            origin: "https://example.com".into(),
+            form_action_origin: Some(".".into()),
+            username: "test".into(),
+            password: "test".into(),
+            ..Default::default()
+        };
+        let login_with_empty_fsu = LoginEntry {
+            origin: "https://example.com".into(),
+            form_action_origin: Some("".into()),
+            username: "test".into(),
+            password: "test".into(),
+            ..Default::default()
+        };
+
+        let login_with_form_submit_and_http_realm = LoginEntry {
+            origin: "https://www.example.com".into(),
+            form_action_origin: Some("https://www.example.com".into()),
+
+            http_realm: Some("\n".into()),
+            username: "".into(),
+            password: "test".into(),
+            ..Default::default()
+        };
+
+        let test_cases = [
+            TestCase {
+                login: login_with_full_url,
+                fixedup_host: "http://example.com".into(),
+                fixedup_form_action_origin: Some("http://example.com".into()),
+            },
+            TestCase {
+                login: login_with_host_unicode,
+                fixedup_host: "http://xn--r28h.com".into(),
+                fixedup_form_action_origin: Some("http://xn--r28h.com".into()),
+            },
+            TestCase {
+                login: login_with_period_fsu,
+                fixedup_form_action_origin: Some("".into()),
+                ..TestCase::default()
+            },
+            TestCase {
+                login: login_with_form_submit_and_http_realm,
+                fixedup_form_action_origin: Some("https://www.example.com".into()),
+                ..TestCase::default()
+            },
+            TestCase {
+                login: login_with_empty_fsu,
+
+                fixedup_form_action_origin: Some("".into()),
+                ..TestCase::default()
+            },
+        ];
+
+        for tc in &test_cases {
+            let login = tc.login.clone().fixup().expect("should work");
+            if let Some(expected) = tc.fixedup_host {
+                assert_eq!(login.origin, expected, "origin not fixed in {:#?}", tc);
+            }
+            assert_eq!(
+                login.form_action_origin, tc.fixedup_form_action_origin,
+                "form_action_origin not fixed in {:#?}",
+                tc,
+            );
+            login.check_valid().unwrap_or_else(|e| {
+                panic!("Fixup produces invalid record: {:#?}", (e, &tc, &login));
+            });
+            assert_eq!(
+                login.clone().fixup().unwrap(),
+                login,
+                "fixup did not reach fixed point for testcase: {:#?}",
+                tc,
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "ignore_form_action_origin_validation_errors")]
+    fn test_invalid_form_action_origin_allowed() {
+        let login = LoginEntry {
+            origin: "https://example.com".into(),
+            form_action_origin: Some("email".into()),
+            username: "test".into(),
+            password: "test".into(),
+            ..Default::default()
+        };
+        let fixed = login.fixup().expect("should not error");
+        assert_eq!(fixed.form_action_origin, Some("email".into()));
+    }
+
+    #[test]
+    fn test_secure_fields_serde() {
+        let sf = SecureLoginFields {
+            username: "foo".into(),
+            password: "pwd".into(),
+        };
+        assert_eq!(
+            serde_json::to_string(&sf).unwrap(),
+            r#"{"u":"foo","p":"pwd"}"#
+        );
+        let got: SecureLoginFields = serde_json::from_str(r#"{"u": "user", "p": "p"}"#).unwrap();
+        let expected = SecureLoginFields {
+            username: "user".into(),
+            password: "p".into(),
+        };
+        assert_eq!(got, expected);
+    }
+}
