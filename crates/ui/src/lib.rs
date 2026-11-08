@@ -20,6 +20,13 @@ pub use library_ui::LibrarySection;
 pub use places_ui::{HistoryItem, Suggestion};
 pub use url_display::display_url;
 
+pub fn configure(ctx: &egui::Context) {
+    ctx.all_styles_mut(|style| {
+        style.visuals.popup_shadow = egui::Shadow::NONE;
+        style.visuals.window_shadow = egui::Shadow::NONE;
+    });
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     Execute(Command),

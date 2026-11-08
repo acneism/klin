@@ -457,8 +457,10 @@ impl Running {
             .ok_or("no GL context for the new window")?;
         let painter = egui_glow::Painter::new(gl, "", None, false)
             .map_err(|e| format!("egui painter: {e}"))?;
+        let egui_ctx = egui::Context::default();
+        klin_ui::configure(&egui_ctx);
         let egui_state = egui_winit::State::new(
-            egui::Context::default(),
+            egui_ctx,
             egui::ViewportId::ROOT,
             &window,
             Some(scale),
