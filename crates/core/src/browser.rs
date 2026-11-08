@@ -4,6 +4,7 @@ use klin_shared::{Disposition, Image, LoadStatus, TabId, Url, WindowId};
 
 use crate::command::Command;
 use crate::engine::{Engine, EngineEvent, PageRequest, Reply};
+use crate::input::InputEvent;
 use crate::prefs;
 use crate::urifixup::{self, SearchEngine};
 use crate::zoom::{self, SiteZoom};
@@ -30,6 +31,7 @@ pub struct Tab {
     pub find_result: Option<crate::engine::FindResult>,
     pub committed: bool,
     pub readerable: bool,
+    pub login_capture: Option<(klin_shared::logins::LoginInput, u64)>,
     pub blocked: Vec<(klin_shared::tracking::BlockCategory, String)>,
     pub blocked_log: Vec<(Url, Vec<(klin_shared::tracking::BlockCategory, String)>)>,
     pub requests: Vec<PageRequest>,
@@ -115,6 +117,15 @@ pub enum UiEffect {
         backwards: bool,
     },
     ToggleHistorySidebar(WindowId),
+    QueryLogins {
+        tab: TabId,
+        origin: String,
+    },
+    OfferSaveLogin {
+        window: WindowId,
+        tab: TabId,
+        login: klin_shared::logins::LoginInput,
+    },
     SiteZoomChanged {
         site: String,
         zoom: Option<f32>,
@@ -131,6 +142,7 @@ pub struct Browser {
     downloads: Vec<klin_shared::download::Download>,
     home: Option<Url>,
     history_disabled: bool,
+    logins: LoginSettings,
 }
 
 impl Browser {
@@ -219,6 +231,35 @@ impl Browser {
 
     pub fn set_home(&mut self, url: Option<Url>) {
         self.home = url;
+    }
+
+    pub fn set_login_settings(&mut self, settings: LoginSettings) {
+        self.logins = settings;
+    }
+
+    pub fn page_input(&mut self, engine: &mut dyn Engine, tab: TabId, input: InputEvent) {
+        use crate::input::{Key, MouseButton, NamedKey};
+        let submits = matches!(
+            &input,
+            InputEvent::Key {
+                key: Key::Named(NamedKey::Enter),
+                pressed: true,
+                ..
+            } | InputEvent::MouseButton {
+                button: MouseButton::Left,
+                pressed: false,
+                ..
+            }
+        );
+        let web = self
+            .tabs
+            .get(&tab)
+            .and_then(|t| t.url.as_ref())
+            .is_some_and(|u| matches!(u.scheme(), "http" | "https"));
+        if submits && web && self.logins.remember {
+            engine.capture_login(tab);
+        }
+        engine.send_input(tab, input);
     }
 
     pub fn set_history_enabled(&mut self, enabled: bool) {
@@ -320,6 +361,7 @@ impl Browser {
                 loaded: true,
                 find_result: None,
                 readerable: false,
+                login_capture: None,
                 blocked: Vec::new(),
                 blocked_log: Vec::new(),
             },
@@ -820,9 +862,27 @@ impl Browser {
                 if let Some(t) = self.tabs.get_mut(&tab) {
                     t.load_status = status;
 
+                    let mut offer = None;
                     if status == LoadStatus::Started {
                         t.favicon = None;
                         t.readerable = false;
+                        offer = t
+                            .login_capture
+                            .take()
+                            .filter(|(_, at)| now_ms().saturating_sub(*at) <= LOGIN_CAPTURE_MS)
+                            .map(|(login, _)| (t.window, login));
+                    }
+                    let web = t
+                        .url
+                        .as_ref()
+                        .is_some_and(|u| matches!(u.scheme(), "http" | "https"));
+                    if status == LoadStatus::Complete && web && self.logins.autofill {
+                        engine.detect_login_form(tab);
+                    }
+                    if let Some((window, login)) = offer
+                        && self.logins.remember
+                    {
+                        return vec![UiEffect::OfferSaveLogin { window, tab, login }];
                     }
                     let check = status == LoadStatus::Complete
                         && t.url.as_ref().is_some_and(crate::reader::should_check_url);
@@ -970,6 +1030,18 @@ impl Browser {
                 return vec![UiEffect::Redraw(tab)];
             }
             EngineEvent::NewFrame { tab } => return vec![UiEffect::Redraw(tab)],
+            EngineEvent::LoginFormFound { tab, origin } => {
+                if self.logins.autofill && !origin.is_empty() && self.tabs.contains_key(&tab) {
+                    return vec![UiEffect::QueryLogins { tab, origin }];
+                }
+            }
+            EngineEvent::LoginCaptured { tab, login } => {
+                if let Some(t) = self.tabs.get_mut(&tab)
+                    && !login.password.is_empty()
+                {
+                    t.login_capture = Some((login, now_ms()));
+                }
+            }
             EngineEvent::ContentBlocked { tab, url, category } => {
                 let Some(t) = self.tabs.get_mut(&tab) else {
                     return Vec::new();
@@ -1030,6 +1102,23 @@ impl Browser {
 }
 
 const BLOCKED_LOG_PAGES: usize = 10;
+
+const LOGIN_CAPTURE_MS: u64 = 30_000;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LoginSettings {
+    pub remember: bool,
+    pub autofill: bool,
+}
+
+impl Default for LoginSettings {
+    fn default() -> Self {
+        Self {
+            remember: true,
+            autofill: true,
+        }
+    }
+}
 
 fn is_bookmarkable(url: &Url) -> bool {
     matches!(url.scheme(), "http" | "https" | "file")
@@ -1102,7 +1191,7 @@ mod tests {
                 status: LoadStatus::Complete,
             },
         );
-        assert_eq!(e.calls, vec![Call::CheckReaderable(tab)]);
+        assert!(e.calls.contains(&Call::CheckReaderable(tab)));
         b.handle_event(
             &mut e,
             EngineEvent::Readerable {
@@ -1201,6 +1290,117 @@ mod tests {
             },
         );
         assert!(b.execute(&mut e, w, Command::SavePage).is_empty());
+    }
+
+    #[test]
+    fn offers_to_save_a_login_submitted_before_navigation() {
+        use crate::input::{Modifiers, MouseButton};
+        use klin_shared::logins::LoginInput;
+        let (mut b, mut e, w) = setup();
+        let tab = b.window(w).unwrap().selected_tab().unwrap();
+        b.handle_event(
+            &mut e,
+            EngineEvent::UrlChanged {
+                tab,
+                url: url("https://a.example/login"),
+            },
+        );
+        e.calls.clear();
+        b.handle_event(
+            &mut e,
+            EngineEvent::LoadStatus {
+                tab,
+                status: LoadStatus::Complete,
+            },
+        );
+        assert!(e.calls.contains(&Call::DetectLoginForm(tab)));
+        assert_eq!(
+            b.handle_event(
+                &mut e,
+                EngineEvent::LoginFormFound {
+                    tab,
+                    origin: "https://a.example".into()
+                }
+            ),
+            vec![UiEffect::QueryLogins {
+                tab,
+                origin: "https://a.example".into()
+            }]
+        );
+        e.calls.clear();
+        let click = InputEvent::MouseButton {
+            button: MouseButton::Left,
+            x: 1.0,
+            y: 1.0,
+            pressed: false,
+        };
+        b.page_input(&mut e, tab, click.clone());
+        assert_eq!(
+            e.calls,
+            vec![Call::CaptureLogin(tab), Call::SendInput(tab, click)]
+        );
+        let typed = InputEvent::Key {
+            key: crate::input::Key::Char('a'),
+            text: Some("a".into()),
+            code: None,
+            modifiers: Modifiers::default(),
+            pressed: true,
+            repeat: false,
+        };
+        e.calls.clear();
+        b.page_input(&mut e, tab, typed);
+        assert!(!e.calls.contains(&Call::CaptureLogin(tab)));
+        let login = LoginInput {
+            origin: "https://a.example".into(),
+            username: "ann".into(),
+            password: "pw".into(),
+            ..Default::default()
+        };
+        b.handle_event(
+            &mut e,
+            EngineEvent::LoginCaptured {
+                tab,
+                login: login.clone(),
+            },
+        );
+        assert_eq!(
+            b.handle_event(
+                &mut e,
+                EngineEvent::LoadStatus {
+                    tab,
+                    status: LoadStatus::Started
+                }
+            ),
+            vec![UiEffect::OfferSaveLogin {
+                window: w,
+                tab,
+                login
+            }]
+        );
+        assert!(
+            b.handle_event(
+                &mut e,
+                EngineEvent::LoadStatus {
+                    tab,
+                    status: LoadStatus::Started
+                }
+            )
+            .is_empty()
+        );
+
+        b.set_login_settings(LoginSettings {
+            remember: false,
+            autofill: false,
+        });
+        e.calls.clear();
+        b.handle_event(
+            &mut e,
+            EngineEvent::LoadStatus {
+                tab,
+                status: LoadStatus::Complete,
+            },
+        );
+        assert!(!e.calls.contains(&Call::DetectLoginForm(tab)));
     }
 
     #[test]

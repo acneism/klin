@@ -17,6 +17,9 @@ pub trait Engine {
 
     fn find(&mut self, tab: TabId, request: FindRequest);
     fn check_readerable(&mut self, tab: TabId);
+    fn detect_login_form(&mut self, tab: TabId);
+    fn capture_login(&mut self, tab: TabId);
+    fn fill_login(&mut self, tab: TabId, origin: &str, username: &str, password: &str);
     fn show_reader(&mut self, tab: TabId);
 
     fn answer(&mut self, request: RequestId, reply: Reply);
@@ -74,6 +77,14 @@ pub enum EngineEvent {
     Readerable {
         tab: TabId,
         readerable: bool,
+    },
+    LoginFormFound {
+        tab: TabId,
+        origin: String,
+    },
+    LoginCaptured {
+        tab: TabId,
+        login: klin_shared::logins::LoginInput,
     },
     ContentBlocked {
         tab: TabId,

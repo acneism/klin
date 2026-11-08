@@ -347,6 +347,34 @@ pub(crate) fn preferences_page(
                         let _ = ui.radio(true, "Особая (изменена в about:config)");
                     }
 
+                    group(ui, "Логины и пароли");
+                    let mut remember = prefs.known_bool(prefs::REMEMBER_SIGNONS);
+                    if ui
+                        .checkbox(
+                            &mut remember,
+                            "Запрашивать сохранение логинов и паролей для сайтов",
+                        )
+                        .changed()
+                    {
+                        actions.push(Action::SetPref(
+                            prefs::REMEMBER_SIGNONS.into(),
+                            PrefValue::Bool(remember),
+                        ));
+                    }
+                    let mut autofill = prefs.known_bool(prefs::AUTOFILL_FORMS);
+                    if ui
+                        .checkbox(&mut autofill, "Автоматически заполнять логины и пароли")
+                        .changed()
+                    {
+                        actions.push(Action::SetPref(
+                            prefs::AUTOFILL_FORMS.into(),
+                            PrefValue::Bool(autofill),
+                        ));
+                    }
+                    if ui.button("Сохранённые логины…").clicked() {
+                        actions.push(Action::OpenInternal(crate::logins_ui::LOGINS_URL));
+                    }
+
                     group(ui, "История");
                     let mut remember = prefs.history_enabled();
                     if ui

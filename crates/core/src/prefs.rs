@@ -42,6 +42,10 @@ pub const EMAIL_TRACKING_PRIVATE: &str = "privacy.trackingprotection.emailtracki
 
 pub const PDFJS_DISABLED: &str = "pdfjs.disabled";
 
+pub const REMEMBER_SIGNONS: &str = "signon.rememberSignons";
+
+pub const AUTOFILL_FORMS: &str = "signon.autofillForms";
+
 pub const STRICT_PREFS: &[&str] = &[TRACKING_PROTECTION, EMAIL_TRACKING];
 
 pub const KNOWN: &[(&str, PrefDefault)] = &[
@@ -60,6 +64,8 @@ pub const KNOWN: &[(&str, PrefDefault)] = &[
     (EMAIL_TRACKING, PrefDefault::Bool(false)),
     (EMAIL_TRACKING_PRIVATE, PrefDefault::Bool(true)),
     (PDFJS_DISABLED, PrefDefault::Bool(false)),
+    (REMEMBER_SIGNONS, PrefDefault::Bool(true)),
+    (AUTOFILL_FORMS, PrefDefault::Bool(true)),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq)]

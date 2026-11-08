@@ -19,6 +19,9 @@ pub enum Call {
     SendInput(TabId, InputEvent),
     Find(TabId, crate::engine::FindRequest),
     CheckReaderable(TabId),
+    DetectLoginForm(TabId),
+    CaptureLogin(TabId),
+    FillLogin(TabId, String, String, String),
     ShowReader(TabId),
     Answer(RequestId, Reply),
 }
@@ -74,6 +77,20 @@ impl Engine for FakeEngine {
     }
     fn check_readerable(&mut self, tab: TabId) {
         self.calls.push(Call::CheckReaderable(tab));
+    }
+    fn detect_login_form(&mut self, tab: TabId) {
+        self.calls.push(Call::DetectLoginForm(tab));
+    }
+    fn capture_login(&mut self, tab: TabId) {
+        self.calls.push(Call::CaptureLogin(tab));
+    }
+    fn fill_login(&mut self, tab: TabId, origin: &str, username: &str, password: &str) {
+        self.calls.push(Call::FillLogin(
+            tab,
+            origin.to_owned(),
+            username.to_owned(),
+            password.to_owned(),
+        ));
     }
     fn show_reader(&mut self, tab: TabId) {
         self.calls.push(Call::ShowReader(tab));

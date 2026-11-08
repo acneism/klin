@@ -4,6 +4,7 @@ mod favicons;
 mod findbar;
 mod icons;
 mod library_ui;
+mod login_offer_ui;
 mod logins_ui;
 mod places_ui;
 mod protections_ui;
@@ -18,6 +19,7 @@ use klin_core::{Browser, Command};
 use klin_shared::{LoadStatus, TabId, WindowId};
 
 pub use library_ui::LibrarySection;
+pub use login_offer_ui::LoginOffer;
 pub use logins_ui::LOGINS_URL;
 pub use places_ui::{HistoryItem, Suggestion};
 pub use url_display::display_url;
@@ -63,6 +65,7 @@ pub enum Action {
     },
     DeleteLogin(String),
     DeleteAllLogins,
+    SaveLogin(login_offer_ui::LoginOffer),
     DeleteBookmark(String),
     DeletePage(klin_shared::Url),
     OpenBookmark {
@@ -118,6 +121,7 @@ pub struct BrowserUi {
     bookmarks_toolbar: Vec<klin_shared::bookmarks::BookmarkNode>,
     library: library_ui::LibraryState,
     logins: logins_ui::LoginsState,
+    login_offer: Option<login_offer_ui::OfferState>,
     bookmarks_tree: Vec<(
         klin_shared::import::BookmarkRoot,
         Vec<klin_shared::bookmarks::BookmarkNode>,
@@ -145,6 +149,10 @@ impl BrowserUi {
             self.suggestions_query = query.to_owned();
             self.suggestion_selected = None;
         }
+    }
+
+    pub fn offer_login(&mut self, offer: LoginOffer) {
+        self.login_offer = Some(login_offer_ui::OfferState::new(offer));
     }
 
     pub fn set_logins(&mut self, logins: Vec<klin_shared::logins::SavedLogin>) {
@@ -353,6 +361,14 @@ impl BrowserUi {
             .any(|a| matches!(a, Action::RemoveBookmark(_)))
         {
             self.bookmark_panel_open = false;
+        }
+
+        if let (Some(state), Some(tab), Some(anchor)) =
+            (self.login_offer.as_mut(), selected, self.url_bar_rect)
+            && state.offer.tab == tab.id
+            && !login_offer_ui::panel(&ctx, anchor, state, &mut actions)
+        {
+            self.login_offer = None;
         }
 
         if let (Some(anchor), true, Some(tab)) =

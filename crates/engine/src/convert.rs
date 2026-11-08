@@ -27,9 +27,14 @@ pub(crate) fn input_event(input: InputEvent) -> servo::InputEvent {
                 KeyState::Up
             };
             let key = match (text, key) {
-                (Some(text), _) if !text.is_empty() => keyboard_types::Key::Character(text),
-                (_, Key::Char(c)) => keyboard_types::Key::Character(c.to_string()),
+                (Some(text), Key::Named(NamedKey::Other)) if !text.is_empty() => {
+                    keyboard_types::Key::Character(text)
+                }
                 (_, Key::Named(named)) => keyboard_types::Key::Named(named_key(named)),
+                (Some(text), Key::Char(_)) if !text.is_empty() => {
+                    keyboard_types::Key::Character(text)
+                }
+                (_, Key::Char(c)) => keyboard_types::Key::Character(c.to_string()),
             };
             let code = code
                 .and_then(|c| keyboard_types::Code::from_str(&c).ok())

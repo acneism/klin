@@ -19,7 +19,7 @@ type BookmarkTree = Vec<(klin_shared::import::BookmarkRoot, Vec<BookmarkNode>)>;
 use klin_shared::download::DownloadEvent;
 use klin_shared::import::ImportedData;
 use klin_shared::session::Session;
-use klin_shared::{Url, WindowId};
+use klin_shared::{TabId, Url, WindowId};
 use klin_storage::ContentPrefs;
 use klin_storage::PlacesService;
 use klin_storage::content_prefs::FULL_ZOOM;
@@ -162,6 +162,55 @@ impl BrowserWindow {
     }
 }
 
+type AutofillReply = (TabId, String, Vec<klin_shared::logins::SavedLogin>);
+
+type OfferReply = (
+    WindowId,
+    TabId,
+    klin_shared::logins::LoginInput,
+    Vec<klin_shared::logins::SavedLogin>,
+);
+
+fn login_offer(
+    tab: TabId,
+    login: klin_shared::logins::LoginInput,
+    existing: &[klin_shared::logins::SavedLogin],
+) -> Result<klin_ui::LoginOffer, Option<String>> {
+    let same_site: Vec<&klin_shared::logins::SavedLogin> = existing
+        .iter()
+        .filter(|l| l.origin == login.origin)
+        .collect();
+    let same_user = same_site.iter().find(|l| l.username == login.username);
+    if let Some(saved) = same_user {
+        if saved.password == login.password {
+            return Err(Some(saved.id.clone()));
+        }
+        return Ok(klin_ui::LoginOffer {
+            tab,
+            login,
+            update: Some(saved.id.clone()),
+        });
+    }
+    if login.username.is_empty() && same_site.len() == 1 {
+        let saved = same_site[0];
+        if saved.password == login.password {
+            return Err(Some(saved.id.clone()));
+        }
+        let mut login = login;
+        login.username = saved.username.clone();
+        return Ok(klin_ui::LoginOffer {
+            tab,
+            login,
+            update: Some(saved.id.clone()),
+        });
+    }
+    Ok(klin_ui::LoginOffer {
+        tab,
+        login,
+        update: None,
+    })
+}
+
 struct Running {
     proxy: EventLoopProxy<Wake>,
     picked_tx: Sender<file_picker::Picked>,
@@ -186,6 +235,10 @@ struct Running {
     logins: klin_storage::LoginsService,
     logins_tx: Sender<Vec<klin_shared::logins::SavedLogin>>,
     logins_rx: Receiver<Vec<klin_shared::logins::SavedLogin>>,
+    autofill_tx: Sender<AutofillReply>,
+    autofill_rx: Receiver<AutofillReply>,
+    offer_tx: Sender<OfferReply>,
+    offer_rx: Receiver<OfferReply>,
     tracking_lists: Option<Arc<klin_content_blocking::Lists>>,
     tracking_rx: Receiver<Arc<klin_content_blocking::Lists>>,
     import_rx: Receiver<Result<ImportedData, String>>,
@@ -354,6 +407,8 @@ impl Running {
             log::warn!("logins key is stored unprotected: DPAPI is only available on Windows");
         }
         let (logins_tx, logins_rx) = channel();
+        let (autofill_tx, autofill_rx) = channel();
+        let (offer_tx, offer_rx) = channel();
         let (tracking_tx, tracking_rx) = channel();
         {
             let proxy = proxy.clone();
@@ -389,6 +444,10 @@ impl Running {
             logins,
             logins_tx,
             logins_rx,
+            autofill_tx,
+            autofill_rx,
+            offer_tx,
+            offer_rx,
             tracking_lists: None,
             tracking_rx,
             tree_rx,
@@ -574,6 +633,30 @@ impl Running {
             for w in &mut self.windows {
                 w.ui.set_logins(logins.clone());
                 w.window.request_redraw();
+            }
+        }
+        while let Ok((tab, origin, logins)) = self.autofill_rx.try_recv() {
+            let exact: Vec<_> = logins.iter().filter(|l| l.origin == origin).collect();
+            if let [login] = exact[..] {
+                klin_core::Engine::fill_login(
+                    &mut self.engine,
+                    tab,
+                    &origin,
+                    &login.username,
+                    &login.password,
+                );
+            }
+        }
+        while let Ok((window, tab, login, existing)) = self.offer_rx.try_recv() {
+            match login_offer(tab, login, &existing) {
+                Ok(offer) => {
+                    if let Some(w) = self.win_mut(window) {
+                        w.ui.offer_login(offer);
+                        w.window.request_redraw();
+                    }
+                }
+                Err(Some(id)) => self.logins.touch(id),
+                Err(None) => {}
             }
         }
         let mut lists_changed = false;
@@ -783,6 +866,28 @@ impl Running {
                     }
                     this();
                 });
+            }
+            Action::SaveLogin(offer) => {
+                let this = self.logins_reloader();
+                match offer.update {
+                    Some(id) => self.logins.update(
+                        id,
+                        offer.login.username,
+                        offer.login.password,
+                        move |result| {
+                            if let Err(error) = result {
+                                log::error!("update login: {error}");
+                            }
+                            this();
+                        },
+                    ),
+                    None => self.logins.save(offer.login, move |result| {
+                        if let Err(error) = result {
+                            log::error!("save login: {error}");
+                        }
+                        this();
+                    }),
+                }
             }
             Action::DeleteLogin(id) => {
                 self.logins.delete(id);
@@ -1042,6 +1147,23 @@ impl Running {
                     let zoom = zoom.map(|z| (f64::from(z) * 100.0).round() / 100.0);
                     self.content_prefs.set(&site, FULL_ZOOM, zoom);
                 }
+                UiEffect::QueryLogins { tab, origin } => {
+                    let tx = self.autofill_tx.clone();
+                    let proxy = self.proxy.clone();
+                    self.logins.for_origin(origin.clone(), move |logins| {
+                        let _ = tx.send((tab, origin, logins));
+                        let _ = proxy.send_event(Wake);
+                    });
+                }
+                UiEffect::OfferSaveLogin { window, tab, login } => {
+                    let tx = self.offer_tx.clone();
+                    let proxy = self.proxy.clone();
+                    self.logins
+                        .for_origin(login.origin.clone(), move |existing| {
+                            let _ = tx.send((window, tab, login, existing));
+                            let _ = proxy.send_event(Wake);
+                        });
+                }
                 UiEffect::NotImplemented(cmd) => info!("{cmd:?} is planned for a later version"),
             }
         }
@@ -1085,6 +1207,10 @@ impl Running {
         self.apply_tracking_protection();
         self.engine
             .set_pdf_viewer(!self.prefs.known_bool(klin_core::prefs::PDFJS_DISABLED));
+        self.browser.set_login_settings(klin_core::LoginSettings {
+            remember: self.prefs.known_bool(klin_core::prefs::REMEMBER_SIGNONS),
+            autofill: self.prefs.known_bool(klin_core::prefs::AUTOFILL_FORMS),
+        });
     }
 
     fn apply_tracking_protection(&mut self) {
@@ -1264,7 +1390,7 @@ impl Running {
 
     fn send(&mut self, id: WindowId, input: InputEvent) {
         if let Some(tab) = self.browser.window(id).and_then(|w| w.selected_tab()) {
-            klin_core::Engine::send_input(&mut self.engine, tab, input);
+            self.browser.page_input(&mut self.engine, tab, input);
         }
     }
 
@@ -1463,6 +1589,48 @@ fn latin_from_code(code: KeyCode) -> Option<char> {
         KeyCode::Minus | KeyCode::NumpadSubtract => Some('-'),
         KeyCode::NumpadAdd => Some('+'),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod login_offer_tests {
+    use super::*;
+    use klin_shared::logins::{LoginInput, SavedLogin};
+
+    fn saved(id: &str, username: &str, password: &str) -> SavedLogin {
+        SavedLogin {
+            id: id.into(),
+            origin: "https://a.example".into(),
+            username: username.into(),
+            password: password.into(),
+            ..Default::default()
+        }
+    }
+
+    fn input(username: &str, password: &str) -> LoginInput {
+        LoginInput {
+            origin: "https://a.example".into(),
+            username: username.into(),
+            password: password.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn decides_between_save_update_and_nothing() {
+        let tab = TabId::next();
+        let existing = vec![saved("1", "ann", "old")];
+        assert_eq!(
+            login_offer(tab, input("ann", "old"), &existing),
+            Err(Some("1".into()))
+        );
+        let update = login_offer(tab, input("ann", "new"), &existing).unwrap();
+        assert_eq!(update.update.as_deref(), Some("1"));
+        let new = login_offer(tab, input("bob", "pw"), &existing).unwrap();
+        assert_eq!(new.update, None);
+        let no_name = login_offer(tab, input("", "newer"), &existing).unwrap();
+        assert_eq!(no_name.login.username, "ann");
+        assert_eq!(no_name.update.as_deref(), Some("1"));
     }
 }
 

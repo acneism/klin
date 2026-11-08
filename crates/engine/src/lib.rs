@@ -52,6 +52,36 @@ const READABILITY_JS: &str = include_str!("../js/readability/Readability.js");
 const READERABLE_LIB_JS: &str = include_str!("../js/readability/Readability-readerable.js");
 const READER_JS: &str = include_str!("../js/reader.js");
 const READERABLE_JS: &str = include_str!("../js/readerable.js");
+const LOGINS_JS: &str = include_str!("../js/logins.js");
+
+fn logins_call(call: &str) -> String {
+    format!("({}).{call}", LOGINS_JS.trim().trim_end_matches(';'))
+}
+
+fn parse_captured_login(json: &str) -> Option<klin_shared::logins::LoginInput> {
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    let text = |key: &str| {
+        value
+            .get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let password = text("password");
+    if password.is_empty() {
+        return None;
+    }
+    let form_action = text("formActionOrigin");
+    Some(klin_shared::logins::LoginInput {
+        origin: text("origin"),
+        form_action_origin: Some(form_action).filter(|a| !a.is_empty()),
+        http_realm: None,
+        username_field: text("usernameField"),
+        password_field: text("passwordField"),
+        username: text("username"),
+        password,
+    })
+}
 
 fn wrap_script(library: &str, body: &str) -> String {
     format!(
@@ -530,6 +560,58 @@ impl Engine for ServoEngine {
                 .events
                 .borrow_mut()
                 .push_back(EngineEvent::Readerable { tab, readerable });
+        });
+    }
+
+    fn detect_login_form(&mut self, tab: TabId) {
+        let Some(webview) = self.webview(tab) else {
+            return;
+        };
+        let shared = self.shared.clone();
+        webview.evaluate_javascript(logins_call("detect()"), move |result| {
+            if let Ok(servo::JSValue::String(origin)) = result
+                && !origin.is_empty()
+            {
+                shared
+                    .events
+                    .borrow_mut()
+                    .push_back(EngineEvent::LoginFormFound { tab, origin });
+            }
+        });
+    }
+
+    fn capture_login(&mut self, tab: TabId) {
+        let Some(webview) = self.webview(tab) else {
+            return;
+        };
+        let shared = self.shared.clone();
+        webview.evaluate_javascript(logins_call("capture()"), move |result| {
+            if let Ok(servo::JSValue::String(json)) = result
+                && let Some(login) = parse_captured_login(&json)
+            {
+                shared
+                    .events
+                    .borrow_mut()
+                    .push_back(EngineEvent::LoginCaptured { tab, login });
+            }
+        });
+    }
+
+    fn fill_login(&mut self, tab: TabId, origin: &str, username: &str, password: &str) {
+        let Some(webview) = self.webview(tab) else {
+            return;
+        };
+        let quote = |s: &str| serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into());
+        let script = logins_call(&format!(
+            "fill({}, {}, {})",
+            quote(origin),
+            quote(username),
+            quote(password)
+        ));
+        webview.evaluate_javascript(script, |result| {
+            if let Err(error) = result {
+                log::debug!("fill login: {error:?}");
+            }
         });
     }
 
