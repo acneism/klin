@@ -543,12 +543,17 @@ mod tests {
             "storage.get",
             json!(["local", null]),
         );
-        assert_eq!(
-            scripts(&out),
-            [format!(
-                "window[\"__klin_e\"](\"{TOKEN}\", {{\"id\":1,\"result\":{{}},\"type\":\"reply\"}});"
-            )]
-        );
+        let script = &scripts(&out)[0];
+        let prefix = format!("window[\"__klin_e\"](\"{TOKEN}\", ");
+        let body: Value = serde_json::from_str(
+            script
+                .strip_prefix(&prefix)
+                .unwrap()
+                .strip_suffix(");")
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body, json!({"type": "reply", "id": 1, "result": {}}));
         host.navigated(tab);
         assert!(
             call(

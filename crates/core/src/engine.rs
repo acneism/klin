@@ -78,6 +78,11 @@ pub enum EngineEvent {
         tab: TabId,
         readerable: bool,
     },
+    ExtensionMessage {
+        tab: TabId,
+        url: Option<Url>,
+        message: String,
+    },
     LoginFormFound {
         tab: TabId,
         origin: String,

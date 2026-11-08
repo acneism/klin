@@ -32,6 +32,7 @@ pub enum Command {
     ShowAllHistory,
     ShowDownloads,
     SavePage,
+    ShowAddons,
     ToggleReaderMode,
     ToggleFullScreen,
     Quit,
@@ -65,6 +66,7 @@ impl Command {
             ShowAllHistory => "Browser:ShowAllHistory",
             ShowDownloads => "Tools:Downloads",
             SavePage => "Browser:SavePage",
+            ShowAddons => "Tools:Addons",
             ToggleReaderMode => "View:ReaderView",
             ToggleFullScreen => "View:FullScreen",
             Quit => "cmd_quitApplication",
@@ -137,6 +139,7 @@ pub fn default_shortcuts() -> Vec<(KeyChord, Command)> {
         (KeyChord::new(M::CTRL, ch('0')), ZoomReset),
         (KeyChord::new(M::CTRL, ch('d')), Bookmark),
         (KeyChord::new(M::CTRL, ch('s')), SavePage),
+        (KeyChord::new(M::CTRL_SHIFT, ch('a')), ShowAddons),
         (
             KeyChord::new(M::CTRL_SHIFT, ch('b')),
             ToggleBookmarksToolbar,

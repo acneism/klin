@@ -12,6 +12,7 @@ pub fn page(name: &str) -> Option<(&'static str, &'static [u8])> {
         "config" => Some(("text/html", include_bytes!("../pages/config.html"))),
         "library" => Some(("text/html", include_bytes!("../pages/library.html"))),
         "logins" => Some(("text/html", include_bytes!("../pages/logins.html"))),
+        "addons" => Some(("text/html", include_bytes!("../pages/addons.html"))),
         _ => None,
     }
 }

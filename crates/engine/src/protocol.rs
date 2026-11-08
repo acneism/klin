@@ -129,3 +129,34 @@ impl ProtocolHandler for Resources {
         true
     }
 }
+
+pub(crate) struct ExtensionPages {
+    pub files: klin_extensions::resources::ExtensionFiles,
+}
+
+impl ProtocolHandler for ExtensionPages {
+    fn load<'a>(
+        &'a self,
+        request: &'a mut Request,
+        _done_chan: &mut DoneChannel,
+        _context: &FetchContext,
+    ) -> Pin<Box<dyn Future<Output = Response> + Send + 'a>> {
+        let url = request.current_url();
+        let host = url.host_str().unwrap_or_default().to_owned();
+        let response = match self.files.get(&host, url.path()) {
+            Some((mime, body)) => html_response(request, url, body, mime),
+            None => Response::network_error(NetworkError::ResourceLoadError(
+                "no such extension file".into(),
+            )),
+        };
+        Box::pin(std::future::ready(response))
+    }
+
+    fn is_fetchable(&self) -> bool {
+        true
+    }
+
+    fn is_secure(&self) -> bool {
+        true
+    }
+}

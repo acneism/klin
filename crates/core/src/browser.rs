@@ -117,6 +117,7 @@ pub enum UiEffect {
         backwards: bool,
     },
     ToggleHistorySidebar(WindowId),
+    ShowAddons(WindowId),
     QueryLogins {
         tab: TabId,
         origin: String,
@@ -712,6 +713,7 @@ impl Browser {
                     backwards: true,
                 }];
             }
+            ShowAddons => return vec![UiEffect::ShowAddons(window)],
             SavePage => {
                 let Some(t) = selected.and_then(|id| self.tabs.get(&id)) else {
                     return Vec::new();
@@ -1030,6 +1032,7 @@ impl Browser {
                 return vec![UiEffect::Redraw(tab)];
             }
             EngineEvent::NewFrame { tab } => return vec![UiEffect::Redraw(tab)],
+            EngineEvent::ExtensionMessage { .. } => {}
             EngineEvent::LoginFormFound { tab, origin } => {
                 if self.logins.autofill && !origin.is_empty() && self.tabs.contains_key(&tab) {
                     return vec![UiEffect::QueryLogins { tab, origin }];

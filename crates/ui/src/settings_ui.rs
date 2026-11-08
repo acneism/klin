@@ -140,6 +140,14 @@ pub(crate) fn menu_button(
                         ui,
                         actions,
                         &mut close,
+                        "Дополнения и темы",
+                        "Ctrl+Shift+A",
+                        Action::OpenInternal(crate::addons_ui::ADDONS_URL),
+                    );
+                    menu_item(
+                        ui,
+                        actions,
+                        &mut close,
                         "Пароли",
                         "",
                         Action::OpenInternal(crate::logins_ui::LOGINS_URL),

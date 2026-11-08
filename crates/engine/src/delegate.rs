@@ -31,6 +31,7 @@ pub(crate) struct Shared {
     pub private_windows: RefCell<HashSet<WindowId>>,
     pub blocker: RefCell<Option<klin_content_blocking::Blocker>>,
     pub pdf_viewer_disabled: Cell<bool>,
+    pub user_content: RefCell<Option<Rc<servo::UserContentManager>>>,
 }
 
 impl Shared {
@@ -296,11 +297,14 @@ impl WebViewDelegate for Delegate {
             return;
         };
 
-        let webview = request
+        let mut builder = request
             .builder(surface.page_context.clone() as Rc<dyn RenderingContext>)
             .hidpi_scale_factor(Scale::new(surface.scale.get()))
-            .delegate(this)
-            .build();
+            .delegate(this);
+        if let Some(user_content) = self.shared.user_content.borrow().clone() {
+            builder = builder.user_content_manager(user_content);
+        }
+        let webview = builder.build();
         let url = webview
             .url()
             .unwrap_or_else(|| Url::parse("about:blank").expect("valid"));
@@ -427,6 +431,24 @@ impl WebViewDelegate for Delegate {
             }
 
             _ => {}
+        }
+    }
+
+    fn show_console_message(
+        &self,
+        webview: WebView,
+        _level: servo::ConsoleLogLevel,
+        message: String,
+    ) {
+        if !message.starts_with(klin_extensions::host::MARK) {
+            return;
+        }
+        if let Some(tab) = self.shared.tab(&webview) {
+            self.shared.push(EngineEvent::ExtensionMessage {
+                tab,
+                url: webview.url(),
+                message,
+            });
         }
     }
 

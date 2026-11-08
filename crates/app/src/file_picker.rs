@@ -25,6 +25,14 @@ pub fn open(
     });
 }
 
+pub fn pick_addon(done: impl FnOnce(Option<PathBuf>) + Send + 'static) {
+    std::thread::spawn(move || {
+        let file = pick(false, &[".xpi".to_owned(), ".zip".to_owned()])
+            .and_then(|files| files.into_iter().next());
+        done(file);
+    });
+}
+
 fn extensions(accept: &[String]) -> Vec<String> {
     let mut out = Vec::new();
     for item in accept {

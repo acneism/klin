@@ -12,6 +12,7 @@ klin-shared.workspace = true
 klin-core.workspace = true
 klin-internal-pages.workspace = true
 klin-content-blocking.workspace = true
+klin-extensions.workspace = true
 servo.workspace = true
 url.workspace = true
 log.workspace = true

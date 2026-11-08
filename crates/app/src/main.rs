@@ -1,3 +1,5 @@
+mod extension_api;
+mod extensions;
 mod file_picker;
 
 use std::error::Error;
@@ -239,8 +241,11 @@ struct Running {
     tree_tx: Sender<(WindowId, BookmarkTree)>,
     toolbar_rx: Receiver<Vec<BookmarkNode>>,
     toolbar_tx: Sender<Vec<BookmarkNode>>,
+    extensions: extensions::Extensions,
     logins: klin_storage::LoginsService,
     logins_tx: Sender<Vec<klin_shared::logins::SavedLogin>>,
+    addon_file_tx: Sender<std::path::PathBuf>,
+    addon_file_rx: Receiver<std::path::PathBuf>,
     logins_rx: Receiver<Vec<klin_shared::logins::SavedLogin>>,
     autofill_tx: Sender<AutofillReply>,
     autofill_rx: Receiver<AutofillReply>,
@@ -402,6 +407,13 @@ impl Running {
         let (toolbar_tx, toolbar_rx) = channel();
         let (tree_tx, tree_rx) = channel();
         let (import_done_tx, import_done_rx) = channel();
+        let mut engine = engine;
+        let mut extensions = extensions::Extensions::new(
+            &profile.dir,
+            &prefs.string(extensions::UUIDS_PREF, "{}"),
+            &engine,
+        );
+        extensions.load(&mut engine);
         let logins = klin_storage::LoginsService::start(
             profile.path("logins.db"),
             Arc::new(klin_storage::ProtectedKeyFile::new(
@@ -414,6 +426,7 @@ impl Running {
             log::warn!("logins key is stored unprotected: DPAPI is only available on Windows");
         }
         let (logins_tx, logins_rx) = channel();
+        let (addon_file_tx, addon_file_rx) = channel();
         let (autofill_tx, autofill_rx) = channel();
         let (offer_tx, offer_rx) = channel();
         let (tracking_tx, tracking_rx) = channel();
@@ -448,9 +461,12 @@ impl Running {
             import_tx,
             toolbar_rx,
             toolbar_tx,
+            extensions,
             logins,
             logins_tx,
             logins_rx,
+            addon_file_tx,
+            addon_file_rx,
             autofill_tx,
             autofill_rx,
             offer_tx,
@@ -492,6 +508,9 @@ impl Running {
                 running.open_window(event_loop, false, start_url)?;
             }
         }
+        running.extensions.start_backgrounds(&mut running.engine);
+        running.persist_extension_uuids();
+        running.refresh_addons();
         Ok(running)
     }
 
@@ -636,6 +655,9 @@ impl Running {
                 w.window.request_redraw();
             }
         }
+        while let Ok(path) = self.addon_file_rx.try_recv() {
+            self.install_addon(path);
+        }
         while let Ok(logins) = self.logins_rx.try_recv() {
             for w in &mut self.windows {
                 w.ui.set_logins(logins.clone());
@@ -741,8 +763,36 @@ impl Running {
             return;
         }
         for event in events {
+            match &event {
+                klin_core::EngineEvent::ExtensionMessage { tab, url, message } => {
+                    let out = self
+                        .extensions
+                        .host
+                        .handle_console(*tab, url.as_ref(), message);
+                    self.extension_outgoing(event_loop, out);
+                    continue;
+                }
+                klin_core::EngineEvent::LoadStatus {
+                    tab,
+                    status: klin_shared::LoadStatus::Started,
+                } => self.extensions.host.navigated(*tab),
+                klin_core::EngineEvent::Closed { tab } => self.extensions.host.navigated(*tab),
+                _ => {}
+            }
+            let tab_update = match &event {
+                klin_core::EngineEvent::UrlChanged { tab, .. }
+                | klin_core::EngineEvent::TitleChanged { tab, .. } => Some(*tab),
+                klin_core::EngineEvent::LoadStatus {
+                    tab,
+                    status: klin_shared::LoadStatus::Complete,
+                } => Some(*tab),
+                _ => None,
+            };
             let effects = self.browser.handle_event(&mut self.engine, event);
             self.apply(event_loop, effects);
+            if let Some(tab) = tab_update {
+                self.notify_tab_updated(tab);
+            }
         }
         self.update_titles();
         for w in &self.windows {
@@ -866,6 +916,33 @@ impl Running {
             }
             Action::ImportFromFirefox => self.start_firefox_import(),
             Action::LoadLogins => self.load_logins(),
+            Action::PickAddonFile => {
+                let tx = self.addon_file_tx.clone();
+                let proxy = self.proxy.clone();
+                file_picker::pick_addon(move |path| {
+                    if let Some(path) = path {
+                        let _ = tx.send(path);
+                        let _ = proxy.send_event(Wake);
+                    }
+                });
+            }
+            Action::InstallAddon(path) => self.install_addon(std::path::PathBuf::from(path)),
+            Action::UninstallAddon(addon) => {
+                self.extensions.uninstall(&addon, &mut self.engine);
+                self.persist_extension_uuids();
+                self.refresh_addons();
+            }
+            Action::SetAddonEnabled { id: addon, enabled } => {
+                self.extensions
+                    .set_enabled(&addon, enabled, &mut self.engine);
+                self.refresh_addons();
+            }
+            Action::AddonOptions(uuid) => {
+                if let Some(url) = self.extensions.options_url(&uuid) {
+                    self.browser.open_or_select(&mut self.engine, id, url);
+                }
+            }
+            Action::AddonClicked(uuid) => self.addon_clicked(event_loop, &uuid),
             Action::AddLogin(input) => {
                 let this = self.logins_reloader();
                 self.logins.save(input, move |result| {
@@ -1168,6 +1245,12 @@ impl Running {
                     let zoom = zoom.map(|z| (f64::from(z) * 100.0).round() / 100.0);
                     self.content_prefs.set(&site, FULL_ZOOM, zoom);
                 }
+                UiEffect::ShowAddons(window) => {
+                    if let Ok(url) = Url::parse(klin_ui::ADDONS_URL) {
+                        self.browser.open_or_select(&mut self.engine, window, url);
+                        self.request_redraw(window);
+                    }
+                }
                 UiEffect::QueryLogins { tab, origin } => {
                     let tx = self.autofill_tx.clone();
                     let proxy = self.proxy.clone();
@@ -1293,6 +1376,15 @@ impl Running {
             w.ui.set_notice(text.clone());
             w.window.request_redraw();
         }
+    }
+
+    fn install_addon(&mut self, path: std::path::PathBuf) {
+        match self.extensions.install(&path, &mut self.engine) {
+            Ok(name) => self.notify_all(format!("Дополнение «{name}» установлено.")),
+            Err(error) => self.notify_all(format!("Не удалось установить дополнение: {error}")),
+        }
+        self.persist_extension_uuids();
+        self.refresh_addons();
     }
 
     fn logins_reloader(&self) -> impl FnOnce() + Send + 'static {

@@ -1,3 +1,4 @@
+mod addons_ui;
 mod bookmarks_bar;
 mod downloads;
 mod favicons;
@@ -18,6 +19,7 @@ use klin_core::browser::Tab;
 use klin_core::{Browser, Command};
 use klin_shared::{LoadStatus, TabId, WindowId};
 
+pub use addons_ui::ADDONS_URL;
 pub use library_ui::LibrarySection;
 pub use login_offer_ui::LoginOffer;
 pub use logins_ui::LOGINS_URL;
@@ -66,6 +68,15 @@ pub enum Action {
     DeleteLogin(String),
     DeleteAllLogins,
     SaveLogin(login_offer_ui::LoginOffer),
+    PickAddonFile,
+    InstallAddon(String),
+    UninstallAddon(String),
+    SetAddonEnabled {
+        id: String,
+        enabled: bool,
+    },
+    AddonOptions(String),
+    AddonClicked(String),
     DeleteBookmark(String),
     DeletePage(klin_shared::Url),
     OpenBookmark {
@@ -122,6 +133,7 @@ pub struct BrowserUi {
     library: library_ui::LibraryState,
     logins: logins_ui::LoginsState,
     login_offer: Option<login_offer_ui::OfferState>,
+    addons: addons_ui::AddonsState,
     bookmarks_tree: Vec<(
         klin_shared::import::BookmarkRoot,
         Vec<klin_shared::bookmarks::BookmarkNode>,
@@ -149,6 +161,10 @@ impl BrowserUi {
             self.suggestions_query = query.to_owned();
             self.suggestion_selected = None;
         }
+    }
+
+    pub fn set_addons(&mut self, addons: Vec<klin_shared::addons::AddonInfo>) {
+        self.addons.addons = addons;
     }
 
     pub fn offer_login(&mut self, offer: LoginOffer) {
@@ -307,6 +323,7 @@ impl BrowserUi {
                             || *u == settings_ui::CONFIG_URL
                             || *u == library_ui::LIBRARY_URL
                             || *u == logins_ui::LOGINS_URL
+                            || *u == addons_ui::ADDONS_URL
                     });
                 if internal != Some(logins_ui::LOGINS_URL) {
                     self.logins.requested = false;
@@ -315,7 +332,9 @@ impl BrowserUi {
                     native_page = true;
                     ui.painter()
                         .rect_filled(page_rect, 0.0, ui.visuals().panel_fill);
-                    if url == logins_ui::LOGINS_URL {
+                    if url == addons_ui::ADDONS_URL {
+                        addons_ui::page(ui, &mut self.addons, &mut actions);
+                    } else if url == logins_ui::LOGINS_URL {
                         logins_ui::show(ui, &mut self.logins, &mut actions);
                     } else if url == library_ui::LIBRARY_URL {
                         let data = library_ui::LibraryData {
@@ -553,6 +572,7 @@ impl BrowserUi {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let zoom = tab.map(|t| t.zoom);
                 settings_ui::menu_button(ui, &mut self.settings, zoom, actions);
+                addons_ui::toolbar_buttons(ui, &mut self.addons, actions);
                 self.downloads_button = None;
                 if let Some(button) = downloads::button(ui, downloads) {
                     if button.clicked() {

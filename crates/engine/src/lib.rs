@@ -150,11 +150,14 @@ pub struct ServoEngine {
     shared: Rc<Shared>,
     delegate: Rc<Delegate>,
     reader: protocol::ReaderStore,
+    extension_files: klin_extensions::resources::ExtensionFiles,
+    user_scripts: Vec<Rc<servo::UserScript>>,
 }
 
 impl ServoEngine {
     pub fn new(waker: Waker, config: EngineConfig) -> Result<Self, EngineError> {
         let reader = protocol::ReaderStore::default();
+        let extension_files = klin_extensions::resources::ExtensionFiles::default();
         let mut protocols = servo::protocol_handler::ProtocolRegistry::with_internal_protocols();
         protocols
             .register(
@@ -173,6 +176,15 @@ impl ServoEngine {
                 ))
             })?;
 
+        protocols
+            .register(
+                "moz-extension",
+                protocol::ExtensionPages {
+                    files: extension_files.clone(),
+                },
+            )
+            .map_err(|e| EngineError(format!("register moz-extension: {e:?}")))?;
+
         let opts = servo::Opts {
             config_dir: config.data_dir,
             ..Default::default()
@@ -190,12 +202,15 @@ impl ServoEngine {
         servo.setup_logging();
 
         let shared = Rc::new(Shared::default());
+        *shared.user_content.borrow_mut() = Some(Rc::new(servo::UserContentManager::new(&servo)));
         let delegate = Delegate::new(shared.clone());
         Ok(Self {
             servo,
             shared,
             delegate,
             reader,
+            extension_files,
+            user_scripts: Vec::new(),
         })
     }
 
@@ -392,6 +407,59 @@ impl ServoEngine {
         self.webview(tab)
     }
 
+    pub fn extension_files(&self) -> klin_extensions::resources::ExtensionFiles {
+        self.extension_files.clone()
+    }
+
+    pub fn set_extension_scripts(&mut self, scripts: Vec<String>) {
+        let Some(user_content) = self.shared.user_content.borrow().clone() else {
+            return;
+        };
+        for script in self.user_scripts.drain(..) {
+            user_content.remove_script(script);
+        }
+        for source in scripts {
+            let script = Rc::new(servo::UserScript::new(source, None));
+            user_content.add_script(script.clone());
+            self.user_scripts.push(script);
+        }
+    }
+
+    pub fn open_extension_view(&mut self, tab: TabId, url: &Url) -> bool {
+        let Some((window, surface)) = self
+            .shared
+            .surfaces
+            .borrow()
+            .iter()
+            .next()
+            .map(|(w, s)| (*w, s.clone()))
+        else {
+            return false;
+        };
+        let rc: Rc<dyn RenderingContext> = surface.page_context.clone();
+        let mut builder = WebViewBuilder::new(&self.servo, rc)
+            .url(url.clone())
+            .hidpi_scale_factor(Scale::new(surface.scale.get()))
+            .delegate(self.delegate.clone());
+        if let Some(user_content) = self.shared.user_content.borrow().clone() {
+            builder = builder.user_content_manager(user_content);
+        }
+        let webview = builder.build();
+        webview.hide();
+        self.shared.register(webview, window, tab);
+        true
+    }
+
+    pub fn evaluate(&self, tab: TabId, script: String) {
+        if let Some(webview) = self.webview(tab) {
+            webview.evaluate_javascript(script, |result| {
+                if let Err(error) = result {
+                    log::debug!("extension delivery: {error:?}");
+                }
+            });
+        }
+    }
+
     pub fn set_pdf_viewer(&self, enabled: bool) {
         self.shared.pdf_viewer_disabled.set(!enabled);
     }
@@ -416,11 +484,14 @@ impl Engine for ServoEngine {
             return;
         };
         let rc: Rc<dyn RenderingContext> = surface.page_context.clone();
-        let webview = WebViewBuilder::new(&self.servo, rc)
+        let mut builder = WebViewBuilder::new(&self.servo, rc)
             .url(protocol::internal_url(url))
             .hidpi_scale_factor(Scale::new(surface.scale.get()))
-            .delegate(self.delegate.clone())
-            .build();
+            .delegate(self.delegate.clone());
+        if let Some(user_content) = self.shared.user_content.borrow().clone() {
+            builder = builder.user_content_manager(user_content);
+        }
+        let webview = builder.build();
         self.shared.register(webview, window, tab);
     }
 
