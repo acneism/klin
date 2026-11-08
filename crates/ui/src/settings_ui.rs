@@ -95,6 +95,14 @@ pub(crate) fn menu_button(
                         ui,
                         actions,
                         &mut close,
+                        "Сохранить страницу как…",
+                        "Ctrl+S",
+                        Action::Execute(Command::SavePage),
+                    );
+                    menu_item(
+                        ui,
+                        actions,
+                        &mut close,
                         "Найти на странице…",
                         "Ctrl+F",
                         Action::Execute(Command::Find),
@@ -274,6 +282,17 @@ pub(crate) fn preferences_page(
                         prefs::DOWNLOAD_DIR,
                         actions,
                     );
+
+                    let mut open_pdf = !prefs.known_bool(prefs::PDFJS_DISABLED);
+                    if ui
+                        .checkbox(&mut open_pdf, "Открывать PDF-файлы в Klin")
+                        .changed()
+                    {
+                        actions.push(Action::SetPref(
+                            prefs::PDFJS_DISABLED.into(),
+                            PrefValue::Bool(!open_pdf),
+                        ));
+                    }
 
                     group(ui, "Импорт данных браузера");
                     if ui.button("Импорт данных из Firefox…").clicked() {

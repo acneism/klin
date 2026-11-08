@@ -40,6 +40,8 @@ pub const EMAIL_TRACKING: &str = "privacy.trackingprotection.emailtracking.enabl
 
 pub const EMAIL_TRACKING_PRIVATE: &str = "privacy.trackingprotection.emailtracking.pbmode.enabled";
 
+pub const PDFJS_DISABLED: &str = "pdfjs.disabled";
+
 pub const STRICT_PREFS: &[&str] = &[TRACKING_PROTECTION, EMAIL_TRACKING];
 
 pub const KNOWN: &[(&str, PrefDefault)] = &[
@@ -57,6 +59,7 @@ pub const KNOWN: &[(&str, PrefDefault)] = &[
     (FINGERPRINTING, PrefDefault::Bool(true)),
     (EMAIL_TRACKING, PrefDefault::Bool(false)),
     (EMAIL_TRACKING_PRIVATE, PrefDefault::Bool(true)),
+    (PDFJS_DISABLED, PrefDefault::Bool(false)),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq)]

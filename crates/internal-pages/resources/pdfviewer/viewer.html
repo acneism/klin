@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title></title>
+<link rel="stylesheet" href="klin-res://pdfjs/web/pdf_viewer.css">
+<link rel="stylesheet" href="klin-res://pdfviewer/viewer.css">
+<script type="module" src="klin-res://pdfviewer/viewer.mjs"></script>
+</head>
+<body>
+<div id="toolbar">
+  <div class="group">
+    <button id="previous" title="Предыдущая страница" aria-label="Предыдущая страница" disabled>&#x2191;</button>
+    <button id="next" title="Следующая страница" aria-label="Следующая страница" disabled>&#x2193;</button>
+    <input id="pageNumber" type="number" min="1" value="1" title="Страница" aria-label="Страница" disabled>
+    <span id="numPages"></span>
+  </div>
+  <div class="group">
+    <button id="zoomOut" title="Уменьшить" aria-label="Уменьшить" disabled>&#x2212;</button>
+    <select id="scaleSelect" title="Масштаб" aria-label="Масштаб" disabled>
+      <option value="auto" selected>Автоматически</option>
+      <option value="page-actual">Реальный размер</option>
+      <option value="page-fit">По размеру страницы</option>
+      <option value="page-width">По ширине страницы</option>
+      <option value="0.5">50%</option>
+      <option value="0.75">75%</option>
+      <option value="1">100%</option>
+      <option value="1.25">125%</option>
+      <option value="1.5">150%</option>
+      <option value="2">200%</option>
+      <option value="3">300%</option>
+      <option value="4">400%</option>
+      <option id="customScale" value="custom" hidden></option>
+    </select>
+    <button id="zoomIn" title="Увеличить" aria-label="Увеличить" disabled>+</button>
+  </div>
+  <div class="group"></div>
+</div>
+<div id="viewerContainer" tabindex="0">
+  <div id="viewer" class="pdfViewer"></div>
+</div>
+<div id="message" hidden></div>
+</body>
+</html>

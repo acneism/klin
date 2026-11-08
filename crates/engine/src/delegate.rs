@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::{Rc, Weak};
 
@@ -30,6 +30,7 @@ pub(crate) struct Shared {
     pub background_opener: RefCell<Option<TabId>>,
     pub private_windows: RefCell<HashSet<WindowId>>,
     pub blocker: RefCell<Option<klin_content_blocking::Blocker>>,
+    pub pdf_viewer_disabled: Cell<bool>,
 }
 
 impl Shared {
@@ -452,6 +453,24 @@ impl WebViewDelegate for Delegate {
                         .push(EngineEvent::ContentBlocked { tab, url, category });
                 }
             }
+            return;
+        }
+        let is_pdf = !self.shared.pdf_viewer_disabled.get()
+            && request.method == http::Method::GET
+            && matches!(request.url.scheme(), "http" | "https")
+            && klin_internal_pages::resources::is_pdf_url(request.url.path());
+        if is_pdf {
+            let mut headers = http::HeaderMap::new();
+            headers.insert(
+                http::header::CONTENT_TYPE,
+                http::HeaderValue::from_static("text/html; charset=utf-8"),
+            );
+            let response = servo::WebResourceResponse::new(request.url.clone())
+                .headers(headers)
+                .status_code(http::StatusCode::OK);
+            let mut intercepted = load.intercept(response);
+            intercepted.send_body_data(klin_internal_pages::resources::PDF_VIEWER_HTML.to_vec());
+            intercepted.finish();
             return;
         }
         let is_download = request.method == http::Method::GET

@@ -21,7 +21,8 @@ shortcuts, data formats, settings.
 > stored in `prefs.js` like Firefox. The Library (Ctrl+Shift+H, Ctrl+Shift+O) shows history,
 > downloads and all bookmark folders with search and deletion. Reader View (F9, Ctrl+Alt+R) uses
 > Mozilla's Readability.js and Firefox's reader styles. Tracking protection blocks third-party
-> trackers from the Disconnect lists Firefox uses, in Standard and Strict modes. Not ready for everyday use.
+> trackers from the Disconnect lists Firefox uses, in Standard and Strict modes. PDF files open
+> in a built-in viewer based on PDF.js; Ctrl+S saves the current page. Not ready for everyday use.
 
 The specification and architecture are in [docs/spec.md](docs/spec.md) (in Russian).
 

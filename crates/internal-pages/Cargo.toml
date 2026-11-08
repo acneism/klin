@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 ammonia.workspace = true
+include_dir.workspace = true
 
 [lints]
 workspace = true

@@ -134,6 +134,14 @@ impl ServoEngine {
                 },
             )
             .map_err(|e| EngineError(format!("register {}: {e:?}", klin_internal_pages::SCHEME)))?;
+        protocols
+            .register(klin_internal_pages::resources::SCHEME, protocol::Resources)
+            .map_err(|e| {
+                EngineError(format!(
+                    "register {}: {e:?}",
+                    klin_internal_pages::resources::SCHEME
+                ))
+            })?;
 
         let opts = servo::Opts {
             config_dir: config.data_dir,
@@ -352,6 +360,10 @@ impl ServoEngine {
     fn visible_webview(&self, window: WindowId) -> Option<WebView> {
         let tab = *self.shared.visible.borrow().get(&window)?;
         self.webview(tab)
+    }
+
+    pub fn set_pdf_viewer(&self, enabled: bool) {
+        self.shared.pdf_viewer_disabled.set(!enabled);
     }
 
     pub fn set_blocker(&self, blocker: Option<klin_content_blocking::Blocker>) {

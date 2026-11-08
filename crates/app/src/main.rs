@@ -1026,6 +1026,8 @@ impl Running {
             dir.into()
         });
         self.apply_tracking_protection();
+        self.engine
+            .set_pdf_viewer(!self.prefs.known_bool(klin_core::prefs::PDFJS_DISABLED));
     }
 
     fn apply_tracking_protection(&mut self) {

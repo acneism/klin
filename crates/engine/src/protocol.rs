@@ -93,3 +93,39 @@ impl ProtocolHandler for InternalPages {
         Box::pin(std::future::ready(response))
     }
 }
+
+pub(crate) struct Resources;
+
+impl ProtocolHandler for Resources {
+    fn load<'a>(
+        &'a self,
+        request: &'a mut Request,
+        _done_chan: &mut DoneChannel,
+        _context: &FetchContext,
+    ) -> Pin<Box<dyn Future<Output = Response> + Send + 'a>> {
+        let url = request.current_url();
+        let host = url.host_str().unwrap_or_default().to_owned();
+        let response = match klin_internal_pages::resources::resource(&host, url.path()) {
+            Some((mime, body)) => {
+                let mut response = html_response(request, url, body.to_vec(), mime);
+                response.headers.insert(
+                    http::header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                    http::HeaderValue::from_static("*"),
+                );
+                response
+            }
+            None => {
+                Response::network_error(NetworkError::ResourceLoadError("unknown resource".into()))
+            }
+        };
+        Box::pin(std::future::ready(response))
+    }
+
+    fn is_fetchable(&self) -> bool {
+        true
+    }
+
+    fn is_secure(&self) -> bool {
+        true
+    }
+}

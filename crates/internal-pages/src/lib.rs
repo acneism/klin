@@ -1,4 +1,5 @@
 pub mod reader;
+pub mod resources;
 
 pub const SCHEME: &str = "klin";
 

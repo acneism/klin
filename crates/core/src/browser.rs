@@ -670,6 +670,23 @@ impl Browser {
                     backwards: true,
                 }];
             }
+            SavePage => {
+                let Some(t) = selected.and_then(|id| self.tabs.get(&id)) else {
+                    return Vec::new();
+                };
+                let url = t
+                    .url
+                    .as_ref()
+                    .map(|u| crate::reader::original_url(u).unwrap_or_else(|| u.clone()))
+                    .filter(|u| matches!(u.scheme(), "http" | "https"));
+                if let Some(url) = url {
+                    return vec![UiEffect::StartDownload {
+                        window,
+                        url,
+                        referrer: None,
+                    }];
+                }
+            }
             Bookmark => {
                 let Some(t) = selected.and_then(|id| self.tabs.get_mut(&id)) else {
                     return Vec::new();
@@ -1154,6 +1171,36 @@ mod tests {
             b.tab(tab).unwrap().blocked,
             vec![(BlockCategory::Social, "t.example".to_owned())]
         );
+    }
+
+    #[test]
+    fn save_page_downloads_the_current_document() {
+        let (mut b, mut e, w) = setup();
+        let tab = b.window(w).unwrap().selected_tab().unwrap();
+        let pdf = url("https://a.example/doc.pdf");
+        b.handle_event(
+            &mut e,
+            EngineEvent::UrlChanged {
+                tab,
+                url: pdf.clone(),
+            },
+        );
+        assert_eq!(
+            b.execute(&mut e, w, Command::SavePage),
+            vec![UiEffect::StartDownload {
+                window: w,
+                url: pdf,
+                referrer: None
+            }]
+        );
+        b.handle_event(
+            &mut e,
+            EngineEvent::UrlChanged {
+                tab,
+                url: url("about:config"),
+            },
+        );
+        assert!(b.execute(&mut e, w, Command::SavePage).is_empty());
     }
 
     #[test]
