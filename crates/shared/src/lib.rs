@@ -18,6 +18,10 @@ macro_rules! id_type {
             pub fn get(self) -> u64 {
                 self.0
             }
+
+            pub fn from_raw(value: u64) -> Self {
+                Self(value)
+            }
         }
 
         impl fmt::Display for $name {

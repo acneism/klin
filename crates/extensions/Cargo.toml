@@ -1,6 +1,6 @@
 [package]
 name = "klin-extensions"
-description = "WebExtensions: manifest, хост, API browser.*"
+description = "WebExtensions: manifest, пакеты, шаблоны адресов, хранилище и скрипты API browser.*"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,8 +9,16 @@ repository.workspace = true
 
 [dependencies]
 klin-shared.workspace = true
-klin-core.workspace = true
-klin-storage.workspace = true
+serde_json.workspace = true
+log.workspace = true
+thiserror.workspace = true
+url.workspace = true
+zip = { version = "=9.4.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+rand = "0.8"
+
+[dev-dependencies]
+tempfile = "3"
+zip = { version = "=9.4.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [lints]
 workspace = true
