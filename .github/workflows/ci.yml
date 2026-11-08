@@ -31,15 +31,20 @@ jobs:
   full:
     if: github.event_name != 'push'
     runs-on: windows-latest
-    env:
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - uses: mozilla-actions/sccache-action@v0.0.9
+      - id: sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+        continue-on-error: true
+      - name: Enable sccache
+        if: steps.sccache.outcome == 'success'
+        shell: bash
+        run: |
+          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
       # Servo 0.6+ требует Clang 19 или новее.
       - name: Install LLVM
         run: choco install llvm -y --no-progress
