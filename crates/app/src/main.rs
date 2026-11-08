@@ -183,6 +183,9 @@ struct Running {
     tree_tx: Sender<(WindowId, BookmarkTree)>,
     toolbar_rx: Receiver<Vec<BookmarkNode>>,
     toolbar_tx: Sender<Vec<BookmarkNode>>,
+    logins: klin_storage::LoginsService,
+    logins_tx: Sender<Vec<klin_shared::logins::SavedLogin>>,
+    logins_rx: Receiver<Vec<klin_shared::logins::SavedLogin>>,
     tracking_lists: Option<Arc<klin_content_blocking::Lists>>,
     tracking_rx: Receiver<Arc<klin_content_blocking::Lists>>,
     import_rx: Receiver<Result<ImportedData, String>>,
@@ -339,6 +342,18 @@ impl Running {
         let (toolbar_tx, toolbar_rx) = channel();
         let (tree_tx, tree_rx) = channel();
         let (import_done_tx, import_done_rx) = channel();
+        let logins = klin_storage::LoginsService::start(
+            profile.path("logins.db"),
+            Arc::new(klin_storage::ProtectedKeyFile::new(
+                profile.path("logins.key"),
+                klin_platform_win::dpapi::protect,
+                klin_platform_win::dpapi::unprotect,
+            )),
+        );
+        if !klin_platform_win::dpapi::PROTECTS {
+            log::warn!("logins key is stored unprotected: DPAPI is only available on Windows");
+        }
+        let (logins_tx, logins_rx) = channel();
         let (tracking_tx, tracking_rx) = channel();
         {
             let proxy = proxy.clone();
@@ -371,6 +386,9 @@ impl Running {
             import_tx,
             toolbar_rx,
             toolbar_tx,
+            logins,
+            logins_tx,
+            logins_rx,
             tracking_lists: None,
             tracking_rx,
             tree_rx,
@@ -549,6 +567,12 @@ impl Running {
         while let Ok((window, tree)) = self.tree_rx.try_recv() {
             if let Some(w) = self.win_mut(window) {
                 w.ui.set_bookmarks_tree(tree);
+                w.window.request_redraw();
+            }
+        }
+        while let Ok(logins) = self.logins_rx.try_recv() {
+            for w in &mut self.windows {
+                w.ui.set_logins(logins.clone());
                 w.window.request_redraw();
             }
         }
@@ -737,6 +761,37 @@ impl Running {
                 }
             }
             Action::ImportFromFirefox => self.start_firefox_import(),
+            Action::LoadLogins => self.load_logins(),
+            Action::AddLogin(input) => {
+                let this = self.logins_reloader();
+                self.logins.save(input, move |result| {
+                    if let Err(error) = result {
+                        log::error!("save login: {error}");
+                    }
+                    this();
+                });
+            }
+            Action::UpdateLogin {
+                id,
+                username,
+                password,
+            } => {
+                let this = self.logins_reloader();
+                self.logins.update(id, username, password, move |result| {
+                    if let Err(error) = result {
+                        log::error!("update login: {error}");
+                    }
+                    this();
+                });
+            }
+            Action::DeleteLogin(id) => {
+                self.logins.delete(id);
+                self.load_logins();
+            }
+            Action::DeleteAllLogins => {
+                self.logins.delete_all();
+                self.load_logins();
+            }
             Action::LoadLibrary => {
                 self.load_history(id);
                 self.load_tree(id);
@@ -1091,6 +1146,22 @@ impl Running {
             w.ui.set_notice(text.clone());
             w.window.request_redraw();
         }
+    }
+
+    fn logins_reloader(&self) -> impl FnOnce() + Send + 'static {
+        let tx = self.logins_tx.clone();
+        let proxy = self.proxy.clone();
+        let list = self.logins.lister();
+        move || {
+            list(Box::new(move |logins| {
+                let _ = tx.send(logins);
+                let _ = proxy.send_event(Wake);
+            }));
+        }
+    }
+
+    fn load_logins(&self) {
+        (self.logins_reloader())();
     }
 
     fn load_tree(&self, window: WindowId) {

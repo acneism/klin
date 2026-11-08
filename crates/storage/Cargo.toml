@@ -27,6 +27,7 @@ anyhow = "1.0"
 rand = "0.8"
 base64 = "0.21"
 aes-gcm = "0.10.3"
+psl.workspace = true
 # mozlz4 (sessionstore.jsonlz4): блок LZ4 без кадра, реализация на Rust.
 lz4_flex = { version = "=0.14.0", default-features = false, features = ["std", "safe-encode", "safe-decode"] }
 log.workspace = true

@@ -3464,6 +3464,9 @@ dependencies = [
 [[package]]
 name = "klin-platform-win"
 version = "0.0.1"
+dependencies = [
+ "windows-dpapi",
+]
 
 [[package]]
 name = "klin-profile"
@@ -3505,6 +3508,7 @@ dependencies = [
  "memchr",
  "parking_lot",
  "percent-encoding",
+ "psl",
  "rand 0.8.8",
  "rusqlite",
  "serde",
@@ -9278,6 +9282,17 @@ dependencies = [
  "windows-link",
  "windows-result",
  "windows-strings",
+]
+
+[[package]]
+name = "windows-dpapi"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2981752d6f11bdcab4db52be8ad5c0e6a6d4d6d566764b3058cc1ee473e6479e"
+dependencies = [
+ "anyhow",
+ "log",
+ "winapi",
 ]
 
 [[package]]

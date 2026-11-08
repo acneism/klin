@@ -36,6 +36,7 @@ id_type!(DownloadId, "download#");
 pub mod bookmarks;
 pub mod download;
 pub mod import;
+pub mod logins;
 pub mod session;
 pub mod tracking;
 

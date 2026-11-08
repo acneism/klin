@@ -9,6 +9,9 @@ repository.workspace = true
 
 [dependencies]
 
+[target.'cfg(windows)'.dependencies]
+windows-dpapi = "=0.2.0"
+
 # The only crate allowed to contain `unsafe` (docs/spec.md, «Качество кода»).
 # Every unsafe block must carry a `// SAFETY:` comment.
 [lints.rust]

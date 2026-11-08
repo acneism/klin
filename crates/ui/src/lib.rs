@@ -4,6 +4,7 @@ mod favicons;
 mod findbar;
 mod icons;
 mod library_ui;
+mod logins_ui;
 mod places_ui;
 mod protections_ui;
 mod requests;
@@ -17,6 +18,7 @@ use klin_core::{Browser, Command};
 use klin_shared::{LoadStatus, TabId, WindowId};
 
 pub use library_ui::LibrarySection;
+pub use logins_ui::LOGINS_URL;
 pub use places_ui::{HistoryItem, Suggestion};
 pub use url_display::display_url;
 
@@ -52,6 +54,15 @@ pub enum Action {
     },
     SetPref(String, klin_core::prefs::PrefValue),
     LoadLibrary,
+    LoadLogins,
+    AddLogin(klin_shared::logins::LoginInput),
+    UpdateLogin {
+        id: String,
+        username: String,
+        password: String,
+    },
+    DeleteLogin(String),
+    DeleteAllLogins,
     DeleteBookmark(String),
     DeletePage(klin_shared::Url),
     OpenBookmark {
@@ -106,6 +117,7 @@ pub struct BrowserUi {
     settings: settings_ui::SettingsState,
     bookmarks_toolbar: Vec<klin_shared::bookmarks::BookmarkNode>,
     library: library_ui::LibraryState,
+    logins: logins_ui::LoginsState,
     bookmarks_tree: Vec<(
         klin_shared::import::BookmarkRoot,
         Vec<klin_shared::bookmarks::BookmarkNode>,
@@ -133,6 +145,10 @@ impl BrowserUi {
             self.suggestions_query = query.to_owned();
             self.suggestion_selected = None;
         }
+    }
+
+    pub fn set_logins(&mut self, logins: Vec<klin_shared::logins::SavedLogin>) {
+        self.logins.set_logins(logins);
     }
 
     pub fn show_library(&mut self, section: LibrarySection) {
@@ -282,12 +298,18 @@ impl BrowserUi {
                         *u == settings_ui::PREFERENCES_URL
                             || *u == settings_ui::CONFIG_URL
                             || *u == library_ui::LIBRARY_URL
+                            || *u == logins_ui::LOGINS_URL
                     });
+                if internal != Some(logins_ui::LOGINS_URL) {
+                    self.logins.requested = false;
+                }
                 if let Some(url) = internal {
                     native_page = true;
                     ui.painter()
                         .rect_filled(page_rect, 0.0, ui.visuals().panel_fill);
-                    if url == library_ui::LIBRARY_URL {
+                    if url == logins_ui::LOGINS_URL {
+                        logins_ui::show(ui, &mut self.logins, &mut actions);
+                    } else if url == library_ui::LIBRARY_URL {
                         let data = library_ui::LibraryData {
                             history: &self.history,
                             bookmarks: &self.bookmarks_tree,

@@ -140,6 +140,14 @@ pub(crate) fn menu_button(
                         ui,
                         actions,
                         &mut close,
+                        "Пароли",
+                        "",
+                        Action::OpenInternal(crate::logins_ui::LOGINS_URL),
+                    );
+                    menu_item(
+                        ui,
+                        actions,
+                        &mut close,
                         "Настройки",
                         "",
                         Action::OpenInternal(PREFERENCES_URL),
