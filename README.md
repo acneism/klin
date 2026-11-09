@@ -35,7 +35,7 @@ The specification and architecture are in [docs/spec.md](docs/spec.md) (in Russi
 
 Requirements (details in [CONTRIBUTING.md](CONTRIBUTING.md)): Rust 1.89+ with the
 `x86_64-pc-windows-msvc` host, Visual Studio 2022 (MSVC v143, ATL, Windows SDK), Clang 19+
-and GStreamer 1.24 (runtime and devel) for audio and video; run `tools/copy-gstreamer.ps1`
+and GStreamer 1.22+ (runtime and devel) for audio and video; run `tools/copy-gstreamer.ps1`
 after building so `klin.exe` finds its media plugins.
 
 ```bash

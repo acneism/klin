@@ -49,25 +49,28 @@ jobs:
       - name: Install LLVM and pkg-config
         run: choco install llvm pkgconfiglite -y --no-progress
       - run: clang --version
-      - name: Cache GStreamer installers
+      - name: Cache GStreamer
+        id: gstreamer-cache
         uses: actions/cache@v4
         with:
-          path: gstreamer-msi
-          key: gstreamer-msvc-x86_64-1.24.13
+          path: C:\gst
+          key: gstreamer-msvc-x86_64-1.22.8
       - name: Install GStreamer
+        if: steps.gstreamer-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          $version = "1.24.13"
-          $base = "https://gstreamer.freedesktop.org/data/pkg/windows/$version/msvc"
-          New-Item -ItemType Directory -Force -Path gstreamer-msi | Out-Null
-          foreach ($name in @("gstreamer-1.0-msvc-x86_64-$version.msi", "gstreamer-1.0-devel-msvc-x86_64-$version.msi")) {
-            $file = "gstreamer-msi\$name"
-            curl.exe -fL --retry 10 --retry-all-errors --retry-delay 5 -C - -o $file "$base/$name"
+          $base = "https://github.com/servo/servo-build-deps/releases/download/msvc-deps"
+          foreach ($name in @("gstreamer-1.0-msvc-x86_64-1.22.8.msi", "gstreamer-1.0-devel-msvc-x86_64-1.22.8.msi")) {
+            curl.exe -fL --retry 5 --retry-all-errors -o $name "$base/$name"
             if ($LASTEXITCODE -ne 0) { throw "download of $name failed" }
-            $process = Start-Process msiexec.exe -ArgumentList "/i", $file, "/qn", "ADDLOCAL=ALL" -Wait -PassThru
+            $process = Start-Process msiexec.exe -ArgumentList "/a", $name, "/qn", "TARGETDIR=C:\gst" -Wait -PassThru
             if ($process.ExitCode -ne 0) { throw "$name failed with $($process.ExitCode)" }
           }
-          $root = "C:\gstreamer\1.0\msvc_x86_64\"
+      - name: Use GStreamer
+        shell: pwsh
+        run: |
+          $root = "C:\gst\gstreamer\1.0\msvc_x86_64\"
+          if (-not (Test-Path "${root}lib\pkgconfig\gstreamer-1.0.pc")) { throw "GStreamer is not in $root" }
           "GSTREAMER_1_0_ROOT_MSVC_X86_64=$root" >> $env:GITHUB_ENV
           "PKG_CONFIG_PATH=${root}lib\pkgconfig" >> $env:GITHUB_ENV
           "${root}bin" >> $env:GITHUB_PATH
