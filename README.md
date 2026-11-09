@@ -27,7 +27,10 @@ shortcuts, data formats, settings.
 > and can be imported from Firefox. WebExtensions run with background pages, content scripts,
 > `storage`, `tabs`, `runtime` and toolbar buttons with popups; add-ons are managed in about:addons.
 > Blocking `webRequest` and `declarativeNetRequest` are supported, and uBlock Origin runs: it
-> blocks requests, hides elements and shows its popup. Not ready for everyday use.
+> blocks requests, hides elements and shows its popup. Video and audio play through GStreamer;
+> Servo has no Media Source Extensions yet, so on YouTube, Twitch and similar sites a button in
+> the address bar opens the video in an external player (mpv with yt-dlp by default).
+> Not ready for everyday use.
 
 The specification and architecture are in [docs/spec.md](docs/spec.md) (in Russian).
 

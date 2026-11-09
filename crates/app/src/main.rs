@@ -1073,6 +1073,25 @@ impl Running {
                 }
             }
             Action::AddonClicked(uuid) => self.addon_clicked(event_loop, &uuid),
+            Action::OpenInExternalPlayer(url) => {
+                let player = self.prefs.string(
+                    klin_core::prefs::EXTERNAL_PLAYER,
+                    klin_core::external_player::DEFAULT_PLAYER,
+                );
+                let args = klin_core::external_player::arguments(&player, &url);
+                if let Err(error) = klin_platform_win::shell::launch(&player, &args) {
+                    log::warn!("external player {player}: {error}");
+                    let name = player.rsplit(['/', '\\']).next().unwrap_or(&player);
+                    self.notify_all(if error.kind() == std::io::ErrorKind::NotFound {
+                        format!(
+                            "Плеер «{name}» не найден. Установите mpv и yt-dlp или укажите путь \
+                             к плееру в настройках."
+                        )
+                    } else {
+                        format!("Не удалось запустить плеер «{name}».")
+                    });
+                }
+            }
             Action::AddLogin(input) => {
                 let this = self.logins_reloader();
                 self.logins.save(input, move |result| {

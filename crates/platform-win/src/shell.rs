@@ -20,3 +20,7 @@ pub fn show_in_folder(path: &Path) -> io::Result<()> {
         Command::new("xdg-open").arg(dir).spawn().map(drop)
     }
 }
+
+pub fn launch(program: &str, args: &[String]) -> io::Result<()> {
+    Command::new(program).args(args).spawn().map(drop)
+}

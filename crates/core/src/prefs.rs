@@ -42,6 +42,8 @@ pub const EMAIL_TRACKING_PRIVATE: &str = "privacy.trackingprotection.emailtracki
 
 pub const PDFJS_DISABLED: &str = "pdfjs.disabled";
 
+pub const EXTERNAL_PLAYER: &str = "klin.media.externalPlayer";
+
 pub const REMEMBER_SIGNONS: &str = "signon.rememberSignons";
 
 pub const AUTOFILL_FORMS: &str = "signon.autofillForms";
@@ -65,6 +67,10 @@ pub const KNOWN: &[(&str, PrefDefault)] = &[
     (EMAIL_TRACKING_PRIVATE, PrefDefault::Bool(true)),
     (PDFJS_DISABLED, PrefDefault::Bool(false)),
     (REMEMBER_SIGNONS, PrefDefault::Bool(true)),
+    (
+        EXTERNAL_PLAYER,
+        PrefDefault::String(crate::external_player::DEFAULT_PLAYER),
+    ),
     (AUTOFILL_FORMS, PrefDefault::Bool(true)),
 ];
 

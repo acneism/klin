@@ -21,6 +21,7 @@ pub enum Icon {
     ReaderActive,
     Shield,
     ShieldActive,
+    ExternalPlayer,
 }
 
 pub fn button(ui: &mut Ui, enabled: bool, icon: Icon, size: f32) -> Response {
@@ -197,6 +198,17 @@ pub fn paint(painter: &egui::Painter, r: Rect, icon: Icon, color: Color32) {
             } else {
                 painter.add(Shape::closed_line(outline, stroke));
             }
+        }
+        Icon::ExternalPlayer => {
+            painter.add(Shape::closed_line(
+                vec![at(0.0, 0.1), at(1.0, 0.1), at(1.0, 0.9), at(0.0, 0.9)],
+                stroke,
+            ));
+            painter.add(Shape::convex_polygon(
+                vec![at(0.38, 0.3), at(0.72, 0.5), at(0.38, 0.7)],
+                color,
+                Stroke::NONE,
+            ));
         }
         Icon::Plus => {
             line(vec![at(0.5, 0.0), at(0.5, 1.0)]);

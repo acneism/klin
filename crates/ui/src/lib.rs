@@ -77,6 +77,7 @@ pub enum Action {
     },
     AddonOptions(String),
     AddonClicked(String),
+    OpenInExternalPlayer(klin_shared::Url),
     DeleteBookmark(String),
     DeletePage(klin_shared::Url),
     OpenBookmark {
@@ -648,6 +649,15 @@ impl BrowserUi {
                     {
                         actions.push(Action::Execute(Command::ToggleReaderMode));
                     }
+                }
+                if let Some(video) = tab
+                    .and_then(|t| t.url.as_ref())
+                    .and_then(klin_core::external_player::streaming_video)
+                    && icons::button(ui, true, Icon::ExternalPlayer, 30.0)
+                        .on_hover_text("Смотреть во внешнем плеере")
+                        .clicked()
+                {
+                    actions.push(Action::OpenInExternalPlayer(video));
                 }
                 let star = places_ui::star_button(ui, can_bookmark, bookmarked);
                 self.star_button = Some(star.rect);

@@ -2,6 +2,7 @@ pub mod browser;
 pub mod command;
 pub mod downloads;
 pub mod engine;
+pub mod external_player;
 pub mod input;
 pub mod prefs;
 pub mod reader;

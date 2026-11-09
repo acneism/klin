@@ -14,6 +14,7 @@ pub const CONFIG_URL: &str = "about:config";
 pub(crate) struct SettingsState {
     homepage: Option<String>,
     download_dir: Option<String>,
+    external_player: Option<String>,
     confirm_clear_history: bool,
     config_accepted: bool,
     config_filter: String,
@@ -309,6 +310,28 @@ pub(crate) fn preferences_page(
                             PrefValue::Bool(!open_pdf),
                         ));
                     }
+
+                    group(ui, "Видео");
+                    ui.label(
+                        RichText::new(
+                            "YouTube, Twitch и другие сайты с потоковым видео пока не \
+                             воспроизводятся в Klin. Кнопка в адресной строке откроет ролик во \
+                             внешнем плеере; mpv берёт поток через yt-dlp.",
+                        )
+                        .weak(),
+                    );
+                    ui.label("Внешний плеер");
+                    text_pref(
+                        ui,
+                        &mut state.external_player,
+                        prefs.string(
+                            prefs::EXTERNAL_PLAYER,
+                            klin_core::external_player::DEFAULT_PLAYER,
+                        ),
+                        "mpv или путь к mpv.exe",
+                        prefs::EXTERNAL_PLAYER,
+                        actions,
+                    );
 
                     group(ui, "Импорт данных браузера");
                     if ui.button("Импорт данных из Firefox…").clicked() {
