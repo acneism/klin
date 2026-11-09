@@ -135,6 +135,14 @@ impl Extensions {
             })
             .collect();
         engine.set_extension_scripts(scripts);
+        engine.set_hold_requests(self.host.wants_requests());
+    }
+
+    pub fn extension_file(&self, url: &Url) -> Option<(&'static str, Vec<u8>)> {
+        if url.scheme() != "moz-extension" {
+            return None;
+        }
+        self.files.get(url.host_str()?, url.path())
     }
 
     pub fn start_backgrounds(&mut self, engine: &mut ServoEngine) -> Vec<Outgoing> {

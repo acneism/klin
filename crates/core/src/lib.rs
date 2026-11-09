@@ -14,6 +14,7 @@ pub use browser::{Browser, ClosedTab, LoginSettings, Tab, VisitKind, Window};
 pub use command::{Command, KeyChord, default_shortcuts};
 pub use engine::{
     Engine, EngineEvent, FindDirection, FindRequest, FindResult, FindWrap, MenuAction, MenuItem,
-    PageRequest, PermissionFeature, Reply, RequestKind, SelectOption,
+    PageRequest, PermissionFeature, Reply, RequestDecision, RequestKind, SelectOption,
+    WebRequestInfo,
 };
 pub use input::InputEvent;

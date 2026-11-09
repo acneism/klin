@@ -78,6 +78,7 @@ pub enum EngineEvent {
         tab: TabId,
         readerable: bool,
     },
+    WebRequest(WebRequestInfo),
     ExtensionMessage {
         tab: TabId,
         url: Option<Url>,
@@ -108,6 +109,25 @@ pub enum EngineEvent {
         tab: TabId,
         reason: String,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WebRequestInfo {
+    pub id: u64,
+    pub tab: Option<TabId>,
+    pub url: Url,
+    pub method: String,
+    pub kind: &'static str,
+    pub document: Option<Url>,
+    pub redirect: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RequestDecision {
+    Continue,
+    Cancel,
+    Respond { mime: String, body: Vec<u8> },
+    Navigate(Url),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

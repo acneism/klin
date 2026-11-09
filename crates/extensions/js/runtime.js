@@ -102,6 +102,33 @@
     }
   };
 
+  const fireSingle = (event, args, callId) => {
+    const set = listeners.get(event);
+    const listener = set && [...set][0];
+    const respond = (value) =>
+      send({ type: "respond", callId, value: value === undefined ? null : value });
+    if (!listener) {
+      respond(null);
+      return;
+    }
+    let result;
+    try {
+      result = listener(...args);
+    } catch (error) {
+      errorLog(error);
+      respond(null);
+      return;
+    }
+    if (result && typeof result.then === "function") {
+      result.then(respond, (error) => {
+        errorLog(error);
+        respond(null);
+      });
+    } else {
+      respond(result);
+    }
+  };
+
   const receive = (message) => {
     if (message.type === "reply") {
       const request = pending.get(message.id);
@@ -114,7 +141,9 @@
         }
       }
     } else if (message.type === "event") {
-      if (message.callId !== undefined) {
+      if (message.single && message.callId !== undefined) {
+        fireSingle(message.event, message.args, message.callId);
+      } else if (message.callId !== undefined) {
         onMessage(message.event, message.args, message.callId);
       } else {
         fire(message.event, message.args);
@@ -220,6 +249,34 @@
     },
   };
 
+  const permissions = (config.manifest.permissions || []).concat(config.manifest.host_permissions || []);
+  const has = (permission) => permissions.includes(permission);
+  const webRequestEvent = (name) => {
+    const ids = new Map();
+    return freeze({
+      addListener(listener, filter, extraInfoSpec) {
+        if (ids.has(listener)) {
+          return;
+        }
+        const id = random();
+        ids.set(listener, id);
+        listeners.set("webRequest:" + id, new Set([listener]));
+        call("webRequest.addListener", [name, id, filter || {}, extraInfoSpec || []]).catch(errorLog);
+      },
+      removeListener(listener) {
+        const id = ids.get(listener);
+        if (id) {
+          ids.delete(listener);
+          listeners.delete("webRequest:" + id);
+          call("webRequest.removeListener", [name, id]).catch(errorLog);
+        }
+      },
+      hasListener(listener) {
+        return ids.has(listener);
+      },
+    });
+  };
+
   if (extensionPage) {
     Object.assign(browser.runtime, {
       onInstalled: event("runtime.onInstalled"),
@@ -259,6 +316,48 @@
       browser.action = action;
     } else {
       browser.browserAction = action;
+    }
+    if (has("webRequest")) {
+      browser.webRequest = {
+        onBeforeRequest: webRequestEvent("onBeforeRequest"),
+        onBeforeSendHeaders: webRequestEvent("onBeforeSendHeaders"),
+        onSendHeaders: webRequestEvent("onSendHeaders"),
+        onHeadersReceived: webRequestEvent("onHeadersReceived"),
+        onAuthRequired: webRequestEvent("onAuthRequired"),
+        onResponseStarted: webRequestEvent("onResponseStarted"),
+        onBeforeRedirect: webRequestEvent("onBeforeRedirect"),
+        onCompleted: webRequestEvent("onCompleted"),
+        onErrorOccurred: webRequestEvent("onErrorOccurred"),
+        handlerBehaviorChanged: api("webRequest.handlerBehaviorChanged"),
+        MAX_HANDLER_BEHAVIOR_CHANGED_CALLS_PER_10_MINUTES: 20,
+        ResourceType: freeze({
+          MAIN_FRAME: "main_frame", SUB_FRAME: "sub_frame", STYLESHEET: "stylesheet", SCRIPT: "script",
+          IMAGE: "image", OBJECT: "object", OBJECT_SUBREQUEST: "object_subrequest",
+          XMLHTTPREQUEST: "xmlhttprequest", XSLT: "xslt", PING: "ping", BEACON: "beacon",
+          XML_DTD: "xml_dtd", FONT: "font", MEDIA: "media", WEBSOCKET: "websocket",
+          CSP_REPORT: "csp_report", IMAGESET: "imageset", WEB_MANIFEST: "web_manifest",
+          SPECULATIVE: "speculative", OTHER: "other",
+        }),
+      };
+    }
+    if (has("declarativeNetRequest") || has("declarativeNetRequestWithHostAccess")) {
+      browser.declarativeNetRequest = {
+        updateDynamicRules: (options) => call("declarativeNetRequest.updateDynamicRules", [options || {}]),
+        getDynamicRules: (filter) => call("declarativeNetRequest.getDynamicRules", [filter || {}]),
+        updateSessionRules: (options) => call("declarativeNetRequest.updateSessionRules", [options || {}]),
+        getSessionRules: (filter) => call("declarativeNetRequest.getSessionRules", [filter || {}]),
+        getEnabledRulesets: () => call("declarativeNetRequest.getEnabledRulesets", [{}]),
+        updateEnabledRulesets: (options) => call("declarativeNetRequest.updateEnabledRulesets", [options || {}]),
+        isRegexSupported: (options) => call("declarativeNetRequest.isRegexSupported", [options || {}]),
+        getAvailableStaticRuleCount: () => call("declarativeNetRequest.getAvailableStaticRuleCount", [{}]),
+        MAX_NUMBER_OF_DYNAMIC_RULES: 30000,
+        MAX_NUMBER_OF_SESSION_RULES: 30000,
+        MAX_NUMBER_OF_REGEX_RULES: 1000,
+        MAX_NUMBER_OF_ENABLED_STATIC_RULESETS: 50,
+        GUARANTEED_MINIMUM_STATIC_RULES: 30000,
+        DYNAMIC_RULESET_ID: "_dynamic",
+        SESSION_RULESET_ID: "_session",
+      };
     }
   }
 

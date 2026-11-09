@@ -59,6 +59,9 @@ pub(crate) struct Shared {
     pub pdf_viewer_disabled: Cell<bool>,
     pub user_content: RefCell<Option<Rc<servo::UserContentManager>>>,
     pub popups: RefCell<HashMap<WindowId, TabId>>,
+    pub hold_requests: Cell<bool>,
+    pub held: RefCell<HeldRequests>,
+    pub next_request: Cell<u64>,
     pub detached_contexts: RefCell<HashMap<TabId, Rc<OffscreenRenderingContext>>>,
 }
 
@@ -265,6 +268,128 @@ impl Delegate {
         if let Some(tab) = self.shared.tab(webview) {
             self.shared.push(f(tab));
         }
+    }
+}
+
+pub(crate) type HeldRequests =
+    HashMap<u64, (servo::WebResourceLoad, std::time::Instant, Option<TabId>)>;
+
+pub(crate) fn resource_type(destination: &str, main_frame: bool, url: &Url) -> &'static str {
+    if main_frame {
+        return "main_frame";
+    }
+    if matches!(url.scheme(), "ws" | "wss") {
+        return "websocket";
+    }
+    match destination {
+        "IFrame" | "Frame" => "sub_frame",
+        "Script" | "Worker" | "SharedWorker" | "ServiceWorker" | "AudioWorklet"
+        | "PaintWorklet" => "script",
+        "Style" => "stylesheet",
+        "Image" => "image",
+        "Font" => "font",
+        "Object" | "Embed" => "object",
+        "Audio" | "Video" | "Track" => "media",
+        "Report" => "csp_report",
+        "Xslt" => "xslt",
+        "Manifest" => "web_manifest",
+        "None" => "xmlhttprequest",
+        _ => "other",
+    }
+}
+
+impl Delegate {
+    fn load_resource(&self, webview: WebView, load: servo::WebResourceLoad) {
+        let request = load.request();
+        if !request.is_for_main_frame {
+            let blocked = match (self.shared.blocker.borrow().as_ref(), webview.url()) {
+                (Some(blocker), Some(top)) => {
+                    let private = self
+                        .shared
+                        .tab(&webview)
+                        .and_then(|tab| self.shared.window_of(tab))
+                        .is_some_and(|w| self.shared.private_windows.borrow().contains(&w));
+                    blocker.classify(&request.url, &top, private)
+                }
+                _ => None,
+            };
+            if let Some(category) = blocked {
+                let url = request.url.clone();
+                let response = servo::WebResourceResponse::new(url.clone());
+                load.intercept(response).cancel();
+                if let Some(tab) = self.shared.tab(&webview) {
+                    self.shared
+                        .push(EngineEvent::ContentBlocked { tab, url, category });
+                }
+                return;
+            }
+            self.hold(webview, load);
+            return;
+        }
+        let is_pdf = !self.shared.pdf_viewer_disabled.get()
+            && request.method == http::Method::GET
+            && matches!(request.url.scheme(), "http" | "https")
+            && klin_internal_pages::resources::is_pdf_url(request.url.path());
+        if is_pdf {
+            let mut headers = http::HeaderMap::new();
+            headers.insert(
+                http::header::CONTENT_TYPE,
+                http::HeaderValue::from_static("text/html; charset=utf-8"),
+            );
+            let response = servo::WebResourceResponse::new(request.url.clone())
+                .headers(headers)
+                .status_code(http::StatusCode::OK);
+            let mut intercepted = load.intercept(response);
+            intercepted.send_body_data(klin_internal_pages::resources::PDF_VIEWER_HTML.to_vec());
+            intercepted.finish();
+            return;
+        }
+        let is_download = request.method == http::Method::GET
+            && klin_core::downloads::looks_like_download(&request.url);
+        if !is_download {
+            self.hold(webview, load);
+            return;
+        }
+        let Some(tab) = self.shared.tab(&webview) else {
+            return;
+        };
+        let url = request.url.clone();
+        let referrer = request.referrer_url.clone();
+
+        let response =
+            servo::WebResourceResponse::new(url.clone()).status_code(http::StatusCode::NO_CONTENT);
+        load.intercept(response).finish();
+        self.shared
+            .push(EngineEvent::DownloadRequested { tab, url, referrer });
+    }
+
+    fn hold(&self, webview: WebView, load: servo::WebResourceLoad) {
+        if !self.shared.hold_requests.get() {
+            return;
+        }
+        let request = load.request();
+        let id = self.shared.next_request.get() + 1;
+        self.shared.next_request.set(id);
+        let destination = format!("{:?}", request.destination);
+        let tab = self.shared.tab(&webview);
+        let info = klin_core::WebRequestInfo {
+            id,
+            tab,
+            url: request.url.clone(),
+            method: request.method.to_string(),
+            kind: resource_type(&destination, request.is_for_main_frame, &request.url),
+            document: if request.is_for_main_frame {
+                None
+            } else {
+                webview.url()
+            },
+            redirect: request.is_redirect,
+        };
+        self.shared
+            .held
+            .borrow_mut()
+            .insert(id, (load, std::time::Instant::now(), tab));
+        self.shared.push(EngineEvent::WebRequest(info));
     }
 }
 
@@ -502,66 +627,8 @@ impl WebViewDelegate for Delegate {
     }
 
     fn load_web_resource(&self, webview: WebView, load: servo::WebResourceLoad) {
-        let request = load.request();
-        if !request.is_for_main_frame {
-            let blocked = match (self.shared.blocker.borrow().as_ref(), webview.url()) {
-                (Some(blocker), Some(top)) => {
-                    let private = self
-                        .shared
-                        .tab(&webview)
-                        .and_then(|tab| self.shared.window_of(tab))
-                        .is_some_and(|w| self.shared.private_windows.borrow().contains(&w));
-                    blocker.classify(&request.url, &top, private)
-                }
-                _ => None,
-            };
-            if let Some(category) = blocked {
-                let url = request.url.clone();
-                let response = servo::WebResourceResponse::new(url.clone());
-                load.intercept(response).cancel();
-                if let Some(tab) = self.shared.tab(&webview) {
-                    self.shared
-                        .push(EngineEvent::ContentBlocked { tab, url, category });
-                }
-            }
-            return;
-        }
-        let is_pdf = !self.shared.pdf_viewer_disabled.get()
-            && request.method == http::Method::GET
-            && matches!(request.url.scheme(), "http" | "https")
-            && klin_internal_pages::resources::is_pdf_url(request.url.path());
-        if is_pdf {
-            let mut headers = http::HeaderMap::new();
-            headers.insert(
-                http::header::CONTENT_TYPE,
-                http::HeaderValue::from_static("text/html; charset=utf-8"),
-            );
-            let response = servo::WebResourceResponse::new(request.url.clone())
-                .headers(headers)
-                .status_code(http::StatusCode::OK);
-            let mut intercepted = load.intercept(response);
-            intercepted.send_body_data(klin_internal_pages::resources::PDF_VIEWER_HTML.to_vec());
-            intercepted.finish();
-            return;
-        }
-        let is_download = request.method == http::Method::GET
-            && klin_core::downloads::looks_like_download(&request.url);
-        if !is_download {
-            return;
-        }
-        let Some(tab) = self.shared.tab(&webview) else {
-            return;
-        };
-        let url = request.url.clone();
-        let referrer = request.referrer_url.clone();
-
-        let response =
-            servo::WebResourceResponse::new(url.clone()).status_code(http::StatusCode::NO_CONTENT);
-        load.intercept(response).finish();
-        self.shared
-            .push(EngineEvent::DownloadRequested { tab, url, referrer });
+        self.load_resource(webview, load);
     }
-
     fn hide_embedder_control(&self, _webview: WebView, control_id: EmbedderControlId) {
         let found = {
             let controls = self.shared.controls.borrow();

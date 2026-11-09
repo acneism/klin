@@ -48,6 +48,7 @@ pub struct EngineConfig {
 pub type PageBlitter = Box<dyn Fn(&glow::Context, [i32; 4]) + Send + Sync>;
 
 const FIND_JS: &str = include_str!("../js/find.js");
+const REQUEST_DECISION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 const READABILITY_JS: &str = include_str!("../js/readability/Readability.js");
 const READERABLE_LIB_JS: &str = include_str!("../js/readability/Readability-readerable.js");
 const READER_JS: &str = include_str!("../js/reader.js");
@@ -317,7 +318,66 @@ impl ServoEngine {
 
     pub fn spin(&mut self) -> Vec<EngineEvent> {
         self.servo.spin_event_loop();
+        self.expire_requests();
         self.shared.events.borrow_mut().drain(..).collect()
+    }
+
+    pub fn set_hold_requests(&self, hold: bool) {
+        self.shared.hold_requests.set(hold);
+        if !hold {
+            self.shared.held.borrow_mut().clear();
+        }
+    }
+
+    fn expire_requests(&self) {
+        let mut held = self.shared.held.borrow_mut();
+        let before = held.len();
+        held.retain(|_, (_, at, _)| at.elapsed() < REQUEST_DECISION_TIMEOUT);
+        if held.len() != before {
+            warn!(
+                "extensions did not answer {} request(s) in time",
+                before - held.len()
+            );
+        }
+    }
+
+    pub fn resolve_request(&mut self, id: u64, decision: klin_core::RequestDecision) {
+        let Some((load, _, tab)) = self.shared.held.borrow_mut().remove(&id) else {
+            return;
+        };
+        let url = load.request().url.clone();
+        match decision {
+            klin_core::RequestDecision::Continue => drop(load),
+            klin_core::RequestDecision::Cancel => {
+                load.intercept(servo::WebResourceResponse::new(url))
+                    .cancel();
+            }
+            klin_core::RequestDecision::Respond { mime, body } => {
+                let mut headers = http::HeaderMap::new();
+                if let Ok(value) = http::HeaderValue::from_str(&mime) {
+                    headers.insert(http::header::CONTENT_TYPE, value);
+                }
+                headers.insert(
+                    http::header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                    http::HeaderValue::from_static("*"),
+                );
+                let response = servo::WebResourceResponse::new(url)
+                    .headers(headers)
+                    .status_code(http::StatusCode::OK);
+                let mut intercepted = load.intercept(response);
+                intercepted.send_body_data(body);
+                intercepted.finish();
+            }
+            klin_core::RequestDecision::Navigate(target) => {
+                load.intercept(
+                    servo::WebResourceResponse::new(url).status_code(http::StatusCode::NO_CONTENT),
+                )
+                .finish();
+                if let Some(webview) = tab.and_then(|tab| self.webview(tab)) {
+                    webview.load(target);
+                }
+            }
+        }
     }
 
     fn surface(&self, window: WindowId) -> Option<Rc<Surface>> {

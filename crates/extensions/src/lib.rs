@@ -1,3 +1,4 @@
+pub mod dnr;
 pub mod host;
 pub mod manifest;
 pub mod match_pattern;

@@ -4,7 +4,9 @@ use std::path::PathBuf;
 use klin_shared::{TabId, Url};
 use serde_json::{Map, Value, json};
 
+use crate::dnr::{self, RuleSet};
 use crate::manifest::Manifest;
+use crate::match_pattern::MatchPattern;
 use crate::package::Package;
 use crate::storage::StorageArea;
 
@@ -40,8 +42,55 @@ pub struct CallRef {
     pub id: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Decision {
+    Continue,
+    Cancel,
+    Redirect(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RequestEvent {
+    pub id: u64,
+    pub url: Url,
+    pub method: String,
+    pub kind: String,
+    pub tab: Option<TabId>,
+    pub document: Option<Url>,
+    pub redirect: bool,
+}
+
+struct Listener {
+    uuid: String,
+    tab: TabId,
+    id: String,
+    event: String,
+    urls: Vec<MatchPattern>,
+    types: Option<Vec<String>>,
+    tab_filter: Option<i64>,
+    blocking: bool,
+}
+
+#[derive(Default)]
+struct DnrState {
+    statics: Vec<(String, bool, RuleSet)>,
+    dynamic: RuleSet,
+    session: RuleSet,
+}
+
+fn base_domain(host: &str) -> &str {
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        return host;
+    }
+    psl::domain_str(host).unwrap_or(host)
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Outgoing {
+    Decide {
+        request: u64,
+        decision: Decision,
+    },
     Eval {
         tab: TabId,
         script: String,
@@ -54,9 +103,16 @@ pub enum Outgoing {
     },
 }
 
-struct Waiting {
-    caller: CallRef,
-    remaining: usize,
+enum Waiting {
+    Message {
+        caller: CallRef,
+        remaining: usize,
+    },
+    Request {
+        request: u64,
+        remaining: usize,
+        redirect: Option<String>,
+    },
 }
 
 pub struct Host {
@@ -66,6 +122,8 @@ pub struct Host {
     sessions: HashMap<(TabId, String), Session>,
     waiting: HashMap<u64, Waiting>,
     next_wait: u64,
+    listeners: Vec<Listener>,
+    dnr: HashMap<String, DnrState>,
 }
 
 fn reply_script(session: &Session, message: &Value) -> String {
@@ -86,17 +144,267 @@ impl Host {
             sessions: HashMap::new(),
             waiting: HashMap::new(),
             next_wait: 1,
+            listeners: Vec::new(),
+            dnr: HashMap::new(),
         }
     }
 
     pub fn add(&mut self, extension: Extension) {
+        let state = self.load_dnr(&extension);
+        if state.statics.iter().any(|(_, _, s)| !s.rules.is_empty())
+            || !state.dynamic.rules.is_empty()
+            || extension.manifest.has_permission("declarativeNetRequest")
+            || extension
+                .manifest
+                .has_permission("declarativeNetRequestWithHostAccess")
+        {
+            self.dnr.insert(extension.uuid.clone(), state);
+        }
         self.extensions.insert(extension.uuid.clone(), extension);
     }
 
     pub fn remove(&mut self, uuid: &str) -> Option<Extension> {
         self.sessions.retain(|(_, u), _| u != uuid);
         self.storage.retain(|(u, _), _| u != uuid);
+        self.listeners.retain(|l| l.uuid != uuid);
+        self.dnr.remove(uuid);
         self.extensions.remove(uuid)
+    }
+
+    pub fn wants_requests(&self) -> bool {
+        !self.dnr.is_empty()
+            || self.extensions.values().any(|e| {
+                e.manifest.has_permission("webRequest")
+                    || e.manifest.has_permission("webRequestBlocking")
+            })
+    }
+
+    fn dnr_path(&self, extension_id: &str) -> PathBuf {
+        self.data_dir
+            .join("browser-extension-data")
+            .join(sanitize(extension_id))
+            .join("dnr.json")
+    }
+
+    fn load_dnr(&self, extension: &Extension) -> DnrState {
+        let saved: Value = std::fs::read_to_string(self.dnr_path(&extension.id))
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or(Value::Null);
+        let enabled_override: Option<Vec<String>> = saved
+            .get("enabledRulesets")
+            .and_then(Value::as_array)
+            .map(|l| {
+                l.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            });
+        let mut state = DnrState::default();
+        for resource in extension
+            .manifest
+            .raw
+            .get("declarative_net_request")
+            .and_then(|d| d.get("rule_resources"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let (Some(id), Some(path)) = (
+                resource.get("id").and_then(Value::as_str),
+                resource.get("path").and_then(Value::as_str),
+            ) else {
+                continue;
+            };
+            let enabled = match &enabled_override {
+                Some(list) => list.iter().any(|e| e == id),
+                None => resource
+                    .get("enabled")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            };
+            let rules = extension
+                .package
+                .read_text(path)
+                .ok()
+                .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+                .map(|v| RuleSet::parse(&v))
+                .unwrap_or_else(|| Err(format!("cannot read {path}")));
+            match rules {
+                Ok(rules) => state.statics.push((id.to_owned(), enabled, rules)),
+                Err(error) => log::warn!("{}: ruleset {id}: {error}", extension.id),
+            }
+        }
+        if let Some(dynamic) = saved.get("dynamicRules") {
+            match RuleSet::parse(dynamic) {
+                Ok(rules) => state.dynamic = rules,
+                Err(error) => log::warn!("{}: dynamic rules: {error}", extension.id),
+            }
+        }
+        state
+    }
+
+    fn save_dnr(&self, uuid: &str) {
+        let (Some(extension), Some(state)) = (self.extensions.get(uuid), self.dnr.get(uuid)) else {
+            return;
+        };
+        let enabled: Vec<&str> = state
+            .statics
+            .iter()
+            .filter(|(_, on, _)| *on)
+            .map(|(id, _, _)| id.as_str())
+            .collect();
+        let text = json!({ "dynamicRules": state.dynamic.to_json(), "enabledRulesets": enabled })
+            .to_string();
+        let path = self.dnr_path(&extension.id);
+        let result = path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|_| std::fs::write(&path, text));
+        if let Err(error) = result {
+            log::error!("{}: {error}", path.display());
+        }
+    }
+
+    fn request_details(&self, request: &RequestEvent) -> Value {
+        let third_party = match (
+            request.url.host_str(),
+            request.document.as_ref().and_then(|d| d.host_str()),
+        ) {
+            (Some(a), Some(b)) => base_domain(a) != base_domain(b),
+            _ => false,
+        };
+        let main = request.kind == "main_frame";
+        let mut details = json!({
+            "requestId": request.id.to_string(),
+            "url": request.url.as_str(),
+            "method": request.method,
+            "type": request.kind,
+            "tabId": request.tab.map_or(-1, |t| t.get() as i64),
+            "frameId": 0,
+            "parentFrameId": if main { -1 } else { 0 },
+            "timeStamp": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0.0, |d| d.as_secs_f64() * 1000.0),
+            "thirdParty": third_party,
+            "incognito": false,
+            "cookieStoreId": "firefox-default",
+            "frameAncestors": [],
+            "urlClassification": { "firstParty": [], "thirdParty": [] },
+            "proxyInfo": null,
+            "ip": null,
+        });
+        if let Some(document) = &request.document {
+            details["documentUrl"] = json!(document.as_str());
+            details["originUrl"] = json!(document.as_str());
+        }
+        details
+    }
+
+    pub fn before_request(&mut self, request: &RequestEvent) -> (Option<Decision>, Vec<Outgoing>) {
+        if !matches!(request.url.scheme(), "http" | "https" | "ws" | "wss") {
+            return (Some(Decision::Continue), Vec::new());
+        }
+        let third_party = match (
+            request.url.host_str(),
+            request.document.as_ref().and_then(|d| d.host_str()),
+        ) {
+            (Some(a), Some(b)) => base_domain(a) != base_domain(b),
+            _ => false,
+        };
+        let dnr_request = dnr::Request {
+            url: &request.url,
+            initiator: request.document.as_ref(),
+            kind: &request.kind,
+            method: &request.method,
+            tab_id: request.tab.map_or(-1, |t| t.get() as i64),
+            third_party,
+        };
+        let mut redirect = None;
+        for (uuid, state) in &self.dnr {
+            let sets = state
+                .statics
+                .iter()
+                .filter(|(_, on, _)| *on)
+                .map(|(_, _, s)| s)
+                .chain([&state.dynamic, &state.session]);
+            match dnr::evaluate(sets, &dnr_request, uuid) {
+                Some(dnr::Outcome::Block) => return (Some(Decision::Cancel), Vec::new()),
+                Some(dnr::Outcome::Redirect(url)) => redirect = redirect.or(Some(url)),
+                _ => {}
+            }
+        }
+        let details = self.request_details(request);
+        let tab_id = request.tab.map_or(-1, |t| t.get() as i64);
+        let mut out = Vec::new();
+        let mut blocking = Vec::new();
+        for listener in &self.listeners {
+            if listener.event != "onBeforeRequest" {
+                continue;
+            }
+            let Some(extension) = self.extensions.get(&listener.uuid) else {
+                continue;
+            };
+            let permitted = extension
+                .manifest
+                .host_permissions
+                .iter()
+                .any(|p| p.matches(&request.url));
+            if !permitted
+                || !listener.urls.iter().any(|p| p.matches(&request.url))
+                || listener
+                    .types
+                    .as_ref()
+                    .is_some_and(|t| !t.contains(&request.kind))
+                || listener.tab_filter.is_some_and(|t| t != tab_id)
+            {
+                continue;
+            }
+            let Some(session) = self.sessions.get(&(listener.tab, listener.uuid.clone())) else {
+                continue;
+            };
+            if listener.blocking {
+                blocking.push((listener.tab, session.clone(), listener.id.clone()));
+            } else {
+                let event = json!({
+                    "type": "event",
+                    "event": format!("webRequest:{}", listener.id),
+                    "args": [details],
+                });
+                out.push(Outgoing::Eval {
+                    tab: listener.tab,
+                    script: reply_script(session, &event),
+                });
+            }
+        }
+        if blocking.is_empty() {
+            let decision = redirect.map_or(Decision::Continue, Decision::Redirect);
+            return (Some(decision), out);
+        }
+        let wait = self.next_wait;
+        self.next_wait += 1;
+        self.waiting.insert(
+            wait,
+            Waiting::Request {
+                request: request.id,
+                remaining: blocking.len(),
+                redirect,
+            },
+        );
+        for (tab, session, id) in blocking {
+            let event = json!({
+                "type": "event",
+                "event": format!("webRequest:{id}"),
+                "args": [details],
+                "callId": wait,
+                "single": true,
+            });
+            out.push(Outgoing::Eval {
+                tab,
+                script: reply_script(&session, &event),
+            });
+        }
+        (None, out)
     }
 
     pub fn extension(&self, uuid: &str) -> Option<&Extension> {
@@ -109,6 +417,7 @@ impl Host {
 
     pub fn navigated(&mut self, tab: TabId) {
         self.sessions.retain(|(t, _), _| *t != tab);
+        self.listeners.retain(|l| l.tab != tab);
     }
 
     pub fn has_page_session(&self, tab: TabId, uuid: &str) -> bool {
@@ -250,22 +559,57 @@ impl Host {
     }
 
     fn respond(&mut self, call_id: u64, message: &Map<String, Value>) -> Vec<Outgoing> {
-        let Some(waiting) = self.waiting.get_mut(&call_id) else {
-            return Vec::new();
-        };
-        let result = if let Some(error) = message.get("error") {
-            Some(Err(error.as_str().unwrap_or("error").to_owned()))
-        } else if message.get("none").is_some() {
-            waiting.remaining = waiting.remaining.saturating_sub(1);
-            (waiting.remaining == 0).then_some(Ok(Value::Null))
-        } else {
-            Some(Ok(message.get("value").cloned().unwrap_or(Value::Null)))
-        };
-        let Some(result) = result else {
-            return Vec::new();
-        };
-        let waiting = self.waiting.remove(&call_id).expect("present");
-        self.reply(&waiting.caller, result).into_iter().collect()
+        match self.waiting.get_mut(&call_id) {
+            Some(Waiting::Message { remaining, .. }) => {
+                let result = if let Some(error) = message.get("error") {
+                    Some(Err(error.as_str().unwrap_or("error").to_owned()))
+                } else if message.get("none").is_some() {
+                    *remaining = remaining.saturating_sub(1);
+                    (*remaining == 0).then_some(Ok(Value::Null))
+                } else {
+                    Some(Ok(message.get("value").cloned().unwrap_or(Value::Null)))
+                };
+                let Some(result) = result else {
+                    return Vec::new();
+                };
+                let Some(Waiting::Message { caller, .. }) = self.waiting.remove(&call_id) else {
+                    return Vec::new();
+                };
+                self.reply(&caller, result).into_iter().collect()
+            }
+            Some(Waiting::Request {
+                request,
+                remaining,
+                redirect,
+            }) => {
+                let value = message.get("value").cloned().unwrap_or(Value::Null);
+                let request = *request;
+                if value.get("cancel").and_then(Value::as_bool) == Some(true) {
+                    self.waiting.remove(&call_id);
+                    return vec![Outgoing::Decide {
+                        request,
+                        decision: Decision::Cancel,
+                    }];
+                }
+                if redirect.is_none()
+                    && let Some(url) = value.get("redirectUrl").and_then(Value::as_str)
+                {
+                    *redirect = Some(url.to_owned());
+                }
+                *remaining = remaining.saturating_sub(1);
+                if *remaining > 0 {
+                    return Vec::new();
+                }
+                let Some(Waiting::Request { redirect, .. }) = self.waiting.remove(&call_id) else {
+                    return Vec::new();
+                };
+                vec![Outgoing::Decide {
+                    request,
+                    decision: redirect.map_or(Decision::Continue, Decision::Redirect),
+                }]
+            }
+            None => Vec::new(),
+        }
     }
 
     fn deliver_message(
@@ -288,7 +632,7 @@ impl Host {
         self.next_wait += 1;
         self.waiting.insert(
             wait,
-            Waiting {
+            Waiting::Message {
                 caller: call,
                 remaining: targets.len(),
             },
@@ -385,6 +729,59 @@ impl Host {
                 }
                 self.deliver_message(call, targets, arg(0), sender)
             }
+            "webRequest.addListener"
+            | "webRequest.removeListener"
+            | "webRequest.handlerBehaviorChanged"
+                if session.context == Context::Page =>
+            {
+                if api == "webRequest.addListener" {
+                    let filter = arg(2);
+                    let urls: Vec<MatchPattern> = filter
+                        .get("urls")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                        .filter_map(|p| MatchPattern::parse(p).ok())
+                        .collect();
+                    if urls.is_empty() {
+                        return self
+                            .reply(&call, Err("webRequest filter needs urls".into()))
+                            .into_iter()
+                            .collect();
+                    }
+                    let blocking = arg(3)
+                        .as_array()
+                        .is_some_and(|l| l.iter().any(|v| v.as_str() == Some("blocking")))
+                        && self
+                            .extensions
+                            .get(&uuid)
+                            .is_some_and(|e| e.manifest.has_permission("webRequestBlocking"));
+                    self.listeners.push(Listener {
+                        uuid: uuid.clone(),
+                        tab: call.tab,
+                        id: arg(1).as_str().unwrap_or_default().to_owned(),
+                        event: arg(0).as_str().unwrap_or_default().to_owned(),
+                        urls,
+                        types: filter.get("types").and_then(Value::as_array).map(|l| {
+                            l.iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_owned)
+                                .collect()
+                        }),
+                        tab_filter: filter.get("tabId").and_then(Value::as_i64),
+                        blocking,
+                    });
+                } else if api == "webRequest.removeListener" {
+                    let id = arg(1).as_str().unwrap_or_default().to_owned();
+                    self.listeners.retain(|l| !(l.uuid == uuid && l.id == id));
+                }
+                self.reply(&call, Ok(Value::Null)).into_iter().collect()
+            }
+            _ if api.starts_with("declarativeNetRequest.") && session.context == Context::Page => {
+                let result = self.dnr_api(&uuid, api, arg(0));
+                self.reply(&call, result).into_iter().collect()
+            }
             "tabs.sendMessage" if session.context == Context::Page => {
                 let Some(target) = arg(0).as_u64().map(TabId::from_raw) else {
                     return self
@@ -424,6 +821,122 @@ impl Host {
                 .into_iter()
                 .collect(),
         }
+    }
+}
+
+impl Host {
+    fn dnr_api(&mut self, uuid: &str, api: &str, options: Value) -> Result<Value, String> {
+        let permitted = self.extensions.get(uuid).is_some_and(|e| {
+            e.manifest.has_permission("declarativeNetRequest")
+                || e.manifest
+                    .has_permission("declarativeNetRequestWithHostAccess")
+        });
+        if !permitted {
+            return Err("Missing declarativeNetRequest permission".into());
+        }
+        let state = self.dnr.entry(uuid.to_owned()).or_default();
+        let ids = |key: &str| -> std::collections::HashSet<i64> {
+            options
+                .get(key)
+                .and_then(Value::as_array)
+                .map(|l| l.iter().filter_map(Value::as_i64).collect())
+                .unwrap_or_default()
+        };
+        let strings = |key: &str| -> Vec<String> {
+            options
+                .get(key)
+                .and_then(Value::as_array)
+                .map(|l| {
+                    l.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let filter_ids = ids("ruleIds");
+        let mut save = false;
+        let result = match api {
+            "declarativeNetRequest.updateDynamicRules"
+            | "declarativeNetRequest.updateSessionRules" => {
+                let dynamic = api.ends_with("DynamicRules");
+                let set = if dynamic {
+                    &mut state.dynamic
+                } else {
+                    &mut state.session
+                };
+                let mut next = set.clone();
+                next.remove(&ids("removeRuleIds"));
+                let added = RuleSet::parse(options.get("addRules").unwrap_or(&json!([])))?;
+                for rule in added.rules {
+                    if next.rules.iter().any(|r| r.id == rule.id) {
+                        return Err(format!("Duplicate rule ID: {}", rule.id));
+                    }
+                    next.rules.push(rule);
+                }
+                *set = next;
+                save = dynamic;
+                Value::Null
+            }
+            "declarativeNetRequest.getDynamicRules" | "declarativeNetRequest.getSessionRules" => {
+                let set = if api.ends_with("DynamicRules") {
+                    &state.dynamic
+                } else {
+                    &state.session
+                };
+                Value::Array(
+                    set.rules
+                        .iter()
+                        .filter(|r| filter_ids.is_empty() || filter_ids.contains(&r.id))
+                        .map(|r| r.raw.clone())
+                        .collect(),
+                )
+            }
+            "declarativeNetRequest.getEnabledRulesets" => json!(
+                state
+                    .statics
+                    .iter()
+                    .filter(|(_, on, _)| *on)
+                    .map(|(id, _, _)| id.clone())
+                    .collect::<Vec<_>>()
+            ),
+            "declarativeNetRequest.updateEnabledRulesets" => {
+                let enable = strings("enableRulesetIds");
+                let disable = strings("disableRulesetIds");
+                for id in enable.iter().chain(&disable) {
+                    if !state.statics.iter().any(|(s, _, _)| s == id) {
+                        return Err(format!("Invalid ruleset id: {id}"));
+                    }
+                }
+                for (id, on, _) in &mut state.statics {
+                    if disable.contains(id) {
+                        *on = false;
+                    }
+                    if enable.contains(id) {
+                        *on = true;
+                    }
+                }
+                save = true;
+                Value::Null
+            }
+            "declarativeNetRequest.isRegexSupported" => {
+                let regex = options
+                    .get("regex")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if dnr::regex_supported(regex) {
+                    json!({ "isSupported": true })
+                } else {
+                    json!({ "isSupported": false, "reason": "syntaxError" })
+                }
+            }
+            "declarativeNetRequest.getAvailableStaticRuleCount" => json!(30000),
+            _ => return Err(format!("{api} is not supported yet")),
+        };
+        if save {
+            self.save_dnr(uuid);
+        }
+        Ok(result)
     }
 }
 
@@ -697,5 +1210,89 @@ mod tests {
         assert!(
             matches!(&reply[0], Outgoing::Eval { tab, script } if *tab == background && script.contains("\"id\":3"))
         );
+    }
+
+    #[test]
+    fn blocking_web_request_listeners_decide_requests() {
+        let dir = tempfile::tempdir().unwrap();
+        let ext_dir = dir.path().join("ext");
+        std::fs::create_dir_all(&ext_dir).unwrap();
+        std::fs::write(
+            ext_dir.join("manifest.json"),
+            r#"{"manifest_version": 2, "name": "W", "version": "1", "permissions": ["webRequest", "webRequestBlocking", "*://*.example.com/*"]}"#,
+        )
+        .unwrap();
+        let package = Package::open(&ext_dir).unwrap();
+        let (manifest, _) = Manifest::load(&package, "ru").unwrap();
+        let mut host = Host::new(dir.path().join("profile"));
+        host.add(Extension {
+            id: "w@example.com".into(),
+            uuid: UUID.into(),
+            manifest,
+            package,
+        });
+        assert!(host.wants_requests());
+        let background = TabId::next();
+        let bg_url = format!("moz-extension://{UUID}/{BACKGROUND_PAGE}");
+        hello(&mut host, background, &bg_url, "page", TOKEN);
+        call(
+            &mut host,
+            background,
+            &bg_url,
+            TOKEN,
+            1,
+            "webRequest.addListener",
+            json!(["onBeforeRequest", "L1", {"urls": ["<all_urls>"], "types": ["script"]}, ["blocking"]]),
+        );
+        let request = |id: u64, url: &str, kind: &str| RequestEvent {
+            id,
+            url: Url::parse(url).unwrap(),
+            method: "GET".into(),
+            kind: kind.into(),
+            tab: Some(TabId::next()),
+            document: Some(Url::parse("https://www.example.com/").unwrap()),
+            redirect: false,
+        };
+        let (decision, out) =
+            host.before_request(&request(10, "https://cdn.example.com/a.js", "script"));
+        assert_eq!(decision, None);
+        let script = &scripts(&out)[0];
+        assert!(script.contains("webRequest:L1") && script.contains("\"single\":true"));
+        let url = Url::parse(&bg_url).unwrap();
+        let decided = host.handle_console(
+            background,
+            Some(&url),
+            &msg(json!({"type": "respond", "ext": UUID, "token": TOKEN, "callId": 1, "value": {"cancel": true}})),
+        );
+        assert_eq!(
+            decided,
+            [Outgoing::Decide {
+                request: 10,
+                decision: Decision::Cancel
+            }]
+        );
+        let (image, _) =
+            host.before_request(&request(11, "https://cdn.example.com/a.png", "image"));
+        assert_eq!(image, Some(Decision::Continue));
+        let (other_host, _) = host.before_request(&request(12, "https://other.org/a.js", "script"));
+        assert_eq!(other_host, Some(Decision::Continue));
+        let (_, out) = host.before_request(&request(13, "https://cdn.example.com/b.js", "script"));
+        assert_eq!(out.len(), 1);
+        let redirected = host.handle_console(
+            background,
+            Some(&url),
+            &msg(json!({"type": "respond", "ext": UUID, "token": TOKEN, "callId": 2, "value": {"redirectUrl": "moz-extension://x/noop.js"}})),
+        );
+        assert_eq!(
+            redirected,
+            [Outgoing::Decide {
+                request: 13,
+                decision: Decision::Redirect("moz-extension://x/noop.js".into())
+            }]
+        );
+        host.navigated(background);
+        let (after, _) =
+            host.before_request(&request(14, "https://cdn.example.com/c.js", "script"));
+        assert_eq!(after, Some(Decision::Continue));
     }
 }

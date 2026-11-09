@@ -1,5 +1,5 @@
 use klin_core::Engine;
-use klin_extensions::host::{CallRef, Outgoing};
+use klin_extensions::host::{CallRef, Decision, Outgoing};
 use klin_extensions::match_pattern::{MatchPattern, glob_matches};
 use klin_shared::{TabId, Url, WindowId};
 use serde_json::{Value, json};
@@ -67,9 +67,65 @@ impl Running {
         Some(info)
     }
 
+    pub(crate) fn web_request(&mut self, info: klin_core::WebRequestInfo) {
+        let event = klin_extensions::host::RequestEvent {
+            id: info.id,
+            url: info.url,
+            method: info.method,
+            kind: info.kind.to_owned(),
+            tab: info.tab,
+            document: info.document,
+            redirect: info.redirect,
+        };
+        let (decision, out) = self.extensions.host.before_request(&event);
+        for item in out {
+            if let Outgoing::Eval { tab, script } = item {
+                self.engine.evaluate(tab, script);
+            }
+        }
+        match decision {
+            Some(decision) => self.decide_request(info.id, info.kind == "main_frame", decision),
+            None => {
+                self.pending_requests
+                    .insert(info.id, info.kind == "main_frame");
+            }
+        }
+    }
+
+    fn decide_request(&mut self, request: u64, main_frame: bool, decision: Decision) {
+        let decision = match decision {
+            Decision::Continue => klin_core::RequestDecision::Continue,
+            Decision::Cancel => klin_core::RequestDecision::Cancel,
+            Decision::Redirect(target) => match Url::parse(&target) {
+                Ok(url) if url.scheme() == "moz-extension" => {
+                    match self.extensions.extension_file(&url) {
+                        Some((mime, body)) => klin_core::RequestDecision::Respond {
+                            mime: mime.to_owned(),
+                            body,
+                        },
+                        None => klin_core::RequestDecision::Cancel,
+                    }
+                }
+                Ok(url) if main_frame => klin_core::RequestDecision::Navigate(url),
+                Ok(url) => {
+                    log::info!(
+                        "redirecting a subresource to {url} is not supported; loading it as is"
+                    );
+                    klin_core::RequestDecision::Continue
+                }
+                Err(_) => klin_core::RequestDecision::Continue,
+            },
+        };
+        self.engine.resolve_request(request, decision);
+    }
+
     pub(crate) fn extension_outgoing(&mut self, event_loop: &ActiveEventLoop, out: Vec<Outgoing>) {
         for item in out {
             match item {
+                Outgoing::Decide { request, decision } => {
+                    let main_frame = self.pending_requests.remove(&request).unwrap_or(false);
+                    self.decide_request(request, main_frame, decision);
+                }
                 Outgoing::Eval { tab, script } => self.engine.evaluate(tab, script),
                 Outgoing::Api {
                     call,

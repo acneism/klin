@@ -249,6 +249,7 @@ struct Running {
     toolbar_rx: Receiver<Vec<BookmarkNode>>,
     toolbar_tx: Sender<Vec<BookmarkNode>>,
     extensions: extensions::Extensions,
+    pending_requests: std::collections::HashMap<u64, bool>,
     logins: klin_storage::LoginsService,
     logins_tx: Sender<Vec<klin_shared::logins::SavedLogin>>,
     addon_file_tx: Sender<std::path::PathBuf>,
@@ -469,6 +470,7 @@ impl Running {
             toolbar_rx,
             toolbar_tx,
             extensions,
+            pending_requests: std::collections::HashMap::new(),
             logins,
             logins_tx,
             logins_rx,
@@ -772,6 +774,10 @@ impl Running {
         }
         for event in events {
             match &event {
+                klin_core::EngineEvent::WebRequest(info) => {
+                    self.web_request(info.clone());
+                    continue;
+                }
                 klin_core::EngineEvent::ExtensionMessage { tab, url, message } => {
                     let out = self
                         .extensions

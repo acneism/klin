@@ -1032,7 +1032,7 @@ impl Browser {
                 return vec![UiEffect::Redraw(tab)];
             }
             EngineEvent::NewFrame { tab } => return vec![UiEffect::Redraw(tab)],
-            EngineEvent::ExtensionMessage { .. } => {}
+            EngineEvent::ExtensionMessage { .. } | EngineEvent::WebRequest(_) => {}
             EngineEvent::LoginFormFound { tab, origin } => {
                 if self.logins.autofill && !origin.is_empty() && self.tabs.contains_key(&tab) {
                     return vec![UiEffect::QueryLogins { tab, origin }];
