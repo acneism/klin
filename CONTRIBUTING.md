@@ -10,7 +10,7 @@
 - если сборка mozjs падает с ошибкой `GetShortPathName`, включите короткие имена 8.3;
 - GStreamer 1.24 для MSVC x86_64: оба установщика с
   [gstreamer.freedesktop.org](https://gstreamer.freedesktop.org/download/) — runtime и devel
-  (`gstreamer-1.0-msvc-x86_64-1.24.12.msi` и `gstreamer-1.0-devel-msvc-x86_64-1.24.12.msi`,
+  (`gstreamer-1.0-msvc-x86_64-1.24.13.msi` и `gstreamer-1.0-devel-msvc-x86_64-1.24.13.msi`,
   «Complete»), и `pkg-config` (например, `choco install pkgconfiglite`). Переменные:
   `GSTREAMER_1_0_ROOT_MSVC_X86_64=C:\gstreamer\1.0\msvc_x86_64\`,
   `PKG_CONFIG_PATH=%GSTREAMER_1_0_ROOT_MSVC_X86_64%lib\pkgconfig`, а в `PATH` — его `bin`.
