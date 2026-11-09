@@ -1,0 +1,23 @@
+name: Probe GStreamer packages
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    steps:
+      - shell: pwsh
+        run: |
+          $index = (Invoke-WebRequest -Uri "https://gstreamer.freedesktop.org/data/pkg/windows/").Content
+          $versions = [regex]::Matches($index, 'href="(1\.2[4-9]\.\d+)/"') | ForEach-Object { $_.Groups[1].Value } | Sort-Object { [version]$_ } -Descending
+          Write-Host "Versions: $($versions -join ', ')"
+          foreach ($v in ($versions | Select-Object -First 3)) {
+            foreach ($sub in @("", "msvc/")) {
+              try {
+                $listing = (Invoke-WebRequest -Uri "https://gstreamer.freedesktop.org/data/pkg/windows/$v/$sub").Content
+                $files = [regex]::Matches($listing, 'href="([^"?/]+)"') | ForEach-Object { $_.Groups[1].Value } | Where-Object { $_ -match 'msvc|x86_64' }
+                Write-Host "== $v/$sub"; $files | ForEach-Object { Write-Host "   $_" }
+              } catch { Write-Host "== $v/$sub : $($_.Exception.Message)" }
+            }
+          }
