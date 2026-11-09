@@ -17,9 +17,74 @@
           (s.includeGlobs.length === 0 || test(s.includeGlobs)) &&
           !test(s.excludeGlobs),
       );
-    if (runs.length === 0) {
+    const inject = config.inject.length > 0 && test(config.inject);
+    if (runs.length === 0 && !inject) {
       return;
     }
+  }
+
+  if (typeof HTMLDocument === "function" && !(document instanceof HTMLDocument) && document.documentElement instanceof HTMLHtmlElement) {
+    try {
+      Object.defineProperty(HTMLDocument, Symbol.hasInstance, {
+        value: (value) =>
+          value instanceof Document &&
+          !!value.documentElement &&
+          value.documentElement.namespaceURI === "http://www.w3.org/1999/xhtml" &&
+          value.contentType !== "application/xhtml+xml",
+        configurable: true,
+      });
+    } catch {}
+  }
+
+  if (self.crypto && typeof self.crypto.randomUUID !== "function" && typeof self.crypto.getRandomValues === "function") {
+    try {
+      Object.defineProperty(Object.getPrototypeOf(self.crypto), "randomUUID", {
+        value: function randomUUID() {
+          const b = self.crypto.getRandomValues(new Uint8Array(16));
+          b[6] = (b[6] & 0x0f) | 0x40;
+          b[8] = (b[8] & 0x3f) | 0x80;
+          const h = Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+          return h.slice(0, 8) + "-" + h.slice(8, 12) + "-" + h.slice(12, 16) + "-" + h.slice(16, 20) + "-" + h.slice(20);
+        },
+        configurable: true,
+        writable: true,
+      });
+    } catch {}
+  }
+
+  if (typeof self.requestIdleCallback !== "function") {
+    const idle = new Map();
+    let nextIdle = 1;
+    self.requestIdleCallback = (callback, options) => {
+      const id = nextIdle++;
+      const start = Date.now();
+      const delay = options && options.timeout ? Math.min(options.timeout, 50) : 1;
+      idle.set(id, setTimeout(() => {
+        idle.delete(id);
+        callback({ didTimeout: false, timeRemaining: () => Math.max(0, 50 - (Date.now() - start)) });
+      }, delay));
+      return id;
+    };
+    self.cancelIdleCallback = (id) => {
+      clearTimeout(idle.get(id));
+      idle.delete(id);
+    };
+  }
+
+  if (!extensionPage && !("wrappedJSObject" in window)) {
+    try {
+      Object.defineProperty(window, "wrappedJSObject", { value: window, configurable: true });
+      Object.defineProperty(window, "cloneInto", { value: (value) => value, configurable: true });
+      Object.defineProperty(window, "exportFunction", {
+        value: (fn, target, options) => {
+          if (options && options.defineAs) {
+            target[options.defineAs] = fn;
+          }
+          return fn;
+        },
+        configurable: true,
+      });
+    } catch {}
   }
 
   const debug = console.debug.bind(console);
@@ -151,10 +216,133 @@
     }
   };
 
+  const ports = new Map();
+  const makePort = (id, name, sender) => {
+    const portListeners = { message: new Set(), disconnect: new Set() };
+    const portEvent = (kind) =>
+      freeze({
+        addListener: (listener) => portListeners[kind].add(listener),
+        removeListener: (listener) => portListeners[kind].delete(listener),
+        hasListener: (listener) => portListeners[kind].has(listener),
+      });
+    let connected = true;
+    const port = {
+      name: name || "",
+      sender,
+      error: null,
+      onMessage: portEvent("message"),
+      onDisconnect: portEvent("disconnect"),
+      postMessage(message) {
+        if (!connected) {
+          throw new Error("Attempt to postMessage on disconnected port");
+        }
+        send({ type: "port", action: "post", port: id, message });
+      },
+      disconnect() {
+        if (connected) {
+          connected = false;
+          ports.delete(id);
+          send({ type: "port", action: "disconnect", port: id });
+        }
+      },
+    };
+    ports.set(id, {
+      port,
+      deliver(message) {
+        for (const listener of [...portListeners.message]) {
+          try {
+            listener(message, port);
+          } catch (error) {
+            errorLog(error);
+          }
+        }
+      },
+      close(error) {
+        if (!connected) {
+          return;
+        }
+        connected = false;
+        ports.delete(id);
+        port.error = error ? { message: error } : null;
+        for (const listener of [...portListeners.disconnect]) {
+          try {
+            listener(port);
+          } catch (e) {
+            errorLog(e);
+          }
+        }
+      },
+    });
+    return port;
+  };
+  const connect = (tabId, info) => {
+    const id = random();
+    const name = info && info.name;
+    const port = makePort(id, name, undefined);
+    send({ type: "port", action: "connect", port: id, name: name || "", tabId });
+    return port;
+  };
+  const styleSheets = new Map();
+
+  const handle = (secret, message) => {
+      if (secret !== token) {
+        return undefined;
+      }
+      if (message.type === "api") {
+        return { browser, chrome };
+      }
+      if (message.type === "css") {
+        const key = message.key;
+        if (message.remove) {
+          const sheet = styleSheets.get(key);
+          if (sheet) {
+            styleSheets.delete(key);
+            if (sheet.node) {
+              sheet.node.remove();
+            } else {
+              document.adoptedStyleSheets = document.adoptedStyleSheets.filter((s) => s !== sheet.sheet);
+            }
+          }
+          return true;
+        }
+        if (styleSheets.has(key)) {
+          return true;
+        }
+        try {
+          const sheet = new CSSStyleSheet();
+          sheet.replaceSync(message.css);
+          document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+          styleSheets.set(key, { sheet });
+        } catch {
+          const node = document.createElement("style");
+          node.textContent = message.css;
+          (document.head || document.documentElement).appendChild(node);
+          styleSheets.set(key, { node });
+        }
+        return true;
+      }
+      if (message.type === "port") {
+        const entryPort = ports.get(message.port);
+        if (message.action === "connect") {
+          const port = makePort(message.port, message.name, message.sender);
+          fire("runtime.onConnect", [port]);
+        } else if (entryPort && message.action === "message") {
+          entryPort.deliver(message.message);
+        } else if (entryPort && message.action === "disconnect") {
+          entryPort.close(message.error);
+        }
+        return undefined;
+      }
+      receive(message);
+      return undefined;
+  };
   defineProperty(window, entry, {
     value: (secret, message) => {
-      if (secret === token) {
-        receive(message);
+      try {
+        return handle(secret, message);
+      } catch (error) {
+        errorLog("klin: " + (error && error.stack ? error.stack : String(error)));
+        return undefined;
       }
     },
     writable: false,
@@ -223,6 +411,8 @@
   const browser = {
     runtime: {
       id: config.id,
+      connect: (extensionId, info) => connect(null, typeof extensionId === "object" ? extensionId : info),
+      onConnect: event("runtime.onConnect"),
       getURL,
       getManifest: () => JSON.parse(stringify(config.manifest)),
       sendMessage: (...args) => call("runtime.sendMessage", sendMessageArgs(args)),
@@ -246,6 +436,10 @@
     extension: {
       getURL,
       inIncognitoContext: false,
+      isAllowedIncognitoAccess: () => PromiseCtor.resolve(false),
+    },
+    dom: {
+      openOrClosedShadowRoot: (element) => element.openOrClosedShadowRoot || element.shadowRoot || null,
     },
   };
 
@@ -277,6 +471,95 @@
     });
   };
 
+  const alarms = new Map();
+  const alarmApi = {
+    create(name, info) {
+      if (typeof name === "object") {
+        info = name;
+        name = "";
+      }
+      name = name || "";
+      info = info || {};
+      const old = alarms.get(name);
+      if (old) {
+        clearTimeout(old.timer);
+      }
+      const period = info.periodInMinutes;
+      const when = info.when !== undefined ? info.when : Date.now() + (info.delayInMinutes !== undefined ? info.delayInMinutes : period || 0) * 60000;
+      const alarm = { name, scheduledTime: when, periodInMinutes: period };
+      const schedule = () => {
+        alarm.timer = setTimeout(() => {
+          fire("alarms.onAlarm", [{ name, scheduledTime: alarm.scheduledTime, periodInMinutes: period }]);
+          if (period) {
+            alarm.scheduledTime = Date.now() + period * 60000;
+            schedule();
+          } else {
+            alarms.delete(name);
+          }
+        }, Math.max(0, alarm.scheduledTime - Date.now()));
+      };
+      alarms.set(name, alarm);
+      schedule();
+      return PromiseCtor.resolve();
+    },
+    get: (name) => {
+      const alarm = alarms.get(name || "");
+      return PromiseCtor.resolve(alarm ? { name: alarm.name, scheduledTime: alarm.scheduledTime, periodInMinutes: alarm.periodInMinutes } : undefined);
+    },
+    getAll: () => PromiseCtor.resolve([...alarms.values()].map((a) => ({ name: a.name, scheduledTime: a.scheduledTime, periodInMinutes: a.periodInMinutes }))),
+    clear(name) {
+      const alarm = alarms.get(name || "");
+      if (alarm) {
+        clearTimeout(alarm.timer);
+        alarms.delete(name || "");
+      }
+      return PromiseCtor.resolve(!!alarm);
+    },
+    clearAll() {
+      for (const alarm of alarms.values()) {
+        clearTimeout(alarm.timer);
+      }
+      const had = alarms.size > 0;
+      alarms.clear();
+      return PromiseCtor.resolve(had);
+    },
+    onAlarm: event("alarms.onAlarm"),
+  };
+  let nextMenu = 1;
+  const menusApi = {
+    create(properties, callback) {
+      const id = (properties && properties.id) || nextMenu++;
+      if (typeof callback === "function") {
+        setTimeout(callback, 0);
+      }
+      return id;
+    },
+    update: () => PromiseCtor.resolve(),
+    remove: () => PromiseCtor.resolve(),
+    removeAll: () => PromiseCtor.resolve(),
+    refresh: () => PromiseCtor.resolve(),
+    onClicked: event("menus.onClicked"),
+    onShown: event("menus.onShown"),
+    onHidden: event("menus.onHidden"),
+    ContextType: freeze({ ALL: "all", PAGE: "page", FRAME: "frame", SELECTION: "selection", LINK: "link", EDITABLE: "editable", IMAGE: "image", VIDEO: "video", AUDIO: "audio", TAB: "tab", BROWSER_ACTION: "browser_action", PAGE_ACTION: "page_action" }),
+  };
+  const navigationEvent = (name) => {
+    const ids = new Map();
+    return freeze({
+      addListener(listener) {
+        if (!ids.has(listener)) {
+          ids.set(listener, true);
+          event("webNavigation." + name).addListener(listener);
+        }
+      },
+      removeListener(listener) {
+        ids.delete(listener);
+        event("webNavigation." + name).removeListener(listener);
+      },
+      hasListener: (listener) => ids.has(listener),
+    });
+  };
+
   if (extensionPage) {
     Object.assign(browser.runtime, {
       onInstalled: event("runtime.onInstalled"),
@@ -284,7 +567,58 @@
       openOptionsPage: api("runtime.openOptionsPage"),
       getBackgroundPage: () => PromiseCtor.resolve(null),
       reload: api("runtime.reload"),
+      onUpdateAvailable: event("runtime.onUpdateAvailable"),
+      onSuspend: event("runtime.onSuspend"),
+      setUninstallURL: () => PromiseCtor.resolve(),
     });
+    browser.storage.managed = freeze({
+      get: () => PromiseCtor.resolve({}),
+      onChanged: event("storage.managed.onChanged"),
+    });
+    if (has("alarms")) {
+      browser.alarms = alarmApi;
+    }
+    if (has("menus") || has("contextMenus")) {
+      browser.menus = menusApi;
+      browser.contextMenus = menusApi;
+    }
+    browser.windows = {
+      get: (windowId, info) => call("windows.get", [windowId, info || {}]),
+      getCurrent: (info) => call("windows.get", [-2, info || {}]),
+      getLastFocused: (info) => call("windows.get", [-2, info || {}]),
+      getAll: (info) => call("windows.getAll", [info || {}]),
+      create: (data) => call("windows.create", [data || {}]),
+      update: (windowId, info) => call("windows.update", [windowId, info || {}]),
+      remove: (windowId) => call("windows.remove", [windowId]),
+      onCreated: event("windows.onCreated"),
+      onRemoved: event("windows.onRemoved"),
+      onFocusChanged: event("windows.onFocusChanged"),
+      WINDOW_ID_NONE: -1,
+      WINDOW_ID_CURRENT: -2,
+      WindowType: freeze({ NORMAL: "normal", POPUP: "popup", PANEL: "panel", DEVTOOLS: "devtools" }),
+      WindowState: freeze({ NORMAL: "normal", MINIMIZED: "minimized", MAXIMIZED: "maximized", FULLSCREEN: "fullscreen", DOCKED: "docked" }),
+    };
+    if (has("webNavigation")) {
+      browser.webNavigation = {
+        onBeforeNavigate: navigationEvent("onBeforeNavigate"),
+        onCommitted: navigationEvent("onCommitted"),
+        onDOMContentLoaded: navigationEvent("onDOMContentLoaded"),
+        onCompleted: navigationEvent("onCompleted"),
+        onErrorOccurred: navigationEvent("onErrorOccurred"),
+        onCreatedNavigationTarget: navigationEvent("onCreatedNavigationTarget"),
+        onReferenceFragmentUpdated: navigationEvent("onReferenceFragmentUpdated"),
+        onHistoryStateUpdated: navigationEvent("onHistoryStateUpdated"),
+        onTabReplaced: navigationEvent("onTabReplaced"),
+        getFrame: (details) => call("webNavigation.getFrame", [details || {}]),
+        getAllFrames: (details) => call("webNavigation.getAllFrames", [details || {}]),
+      };
+    }
+    browser.contentScripts = {
+      register: (options) =>
+        call("contentScripts.register", [options || {}]).then((id) => ({
+          unregister: () => call("contentScripts.unregister", [id]),
+        })),
+    };
     browser.tabs = {
       query: api("tabs.query"),
       get: api("tabs.get"),
@@ -294,6 +628,30 @@
       remove: api("tabs.remove"),
       reload: api("tabs.reload"),
       sendMessage: (tabId, message) => call("tabs.sendMessage", [tabId, message]),
+      connect: (tabId, info) => connect(tabId, info),
+      executeScript: (tabId, details) =>
+        typeof tabId === "object" && tabId !== null
+          ? call("tabs.executeScript", [null, tabId])
+          : call("tabs.executeScript", [tabId === undefined ? null : tabId, details || {}]),
+      insertCSS: (tabId, details) =>
+        typeof tabId === "object" && tabId !== null
+          ? call("tabs.insertCSS", [null, tabId])
+          : call("tabs.insertCSS", [tabId === undefined ? null : tabId, details || {}]),
+      removeCSS: (tabId, details) =>
+        typeof tabId === "object" && tabId !== null
+          ? call("tabs.removeCSS", [null, tabId])
+          : call("tabs.removeCSS", [tabId === undefined ? null : tabId, details || {}]),
+      move: api("tabs.move"),
+      duplicate: api("tabs.duplicate"),
+      discard: () => PromiseCtor.resolve(),
+      highlight: () => PromiseCtor.resolve(),
+      getZoom: () => PromiseCtor.resolve(1),
+      onReplaced: event("tabs.onReplaced"),
+      onMoved: event("tabs.onMoved"),
+      onAttached: event("tabs.onAttached"),
+      onDetached: event("tabs.onDetached"),
+      onHighlighted: event("tabs.onHighlighted"),
+      onZoomChange: event("tabs.onZoomChange"),
       onCreated: event("tabs.onCreated"),
       onUpdated: event("tabs.onUpdated"),
       onActivated: event("tabs.onActivated"),
@@ -307,6 +665,11 @@
       setTitle: api("action.setTitle"),
       getTitle: api("action.getTitle"),
       setIcon: () => PromiseCtor.resolve(),
+      setBadgeTextColor: () => PromiseCtor.resolve(),
+      getBadgeBackgroundColor: () => PromiseCtor.resolve([217, 0, 0, 255]),
+      isEnabled: () => PromiseCtor.resolve(true),
+      getPopup: api("action.getPopup"),
+      openPopup: () => PromiseCtor.resolve(),
       setPopup: api("action.setPopup"),
       enable: api("action.enable"),
       disable: api("action.disable"),

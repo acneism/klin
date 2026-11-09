@@ -250,6 +250,10 @@ struct Running {
     toolbar_tx: Sender<Vec<BookmarkNode>>,
     extensions: extensions::Extensions,
     pending_requests: std::collections::HashMap<u64, bool>,
+    known_tabs: std::collections::HashMap<TabId, WindowId>,
+    active_tabs: std::collections::HashMap<WindowId, TabId>,
+    exec_tx: Sender<extension_api::ExecResult>,
+    exec_rx: Receiver<extension_api::ExecResult>,
     logins: klin_storage::LoginsService,
     logins_tx: Sender<Vec<klin_shared::logins::SavedLogin>>,
     addon_file_tx: Sender<std::path::PathBuf>,
@@ -434,6 +438,7 @@ impl Running {
             log::warn!("logins key is stored unprotected: DPAPI is only available on Windows");
         }
         let (logins_tx, logins_rx) = channel();
+        let (exec_tx, exec_rx) = channel();
         let (addon_file_tx, addon_file_rx) = channel();
         let (autofill_tx, autofill_rx) = channel();
         let (offer_tx, offer_rx) = channel();
@@ -471,6 +476,10 @@ impl Running {
             toolbar_tx,
             extensions,
             pending_requests: std::collections::HashMap::new(),
+            known_tabs: std::collections::HashMap::new(),
+            active_tabs: std::collections::HashMap::new(),
+            exec_tx,
+            exec_rx,
             logins,
             logins_tx,
             logins_rx,
@@ -665,6 +674,13 @@ impl Running {
                 w.window.request_redraw();
             }
         }
+        while let Ok((call, result, execute)) = self.exec_rx.try_recv() {
+            if let Some(klin_extensions::host::Outgoing::Eval { tab, script }) =
+                self.extensions.host.finish_eval(&call, result, execute)
+            {
+                self.engine.evaluate(tab, script);
+            }
+        }
         while let Ok(path) = self.addon_file_rx.try_recv() {
             self.install_addon(path);
         }
@@ -789,14 +805,37 @@ impl Running {
                 klin_core::EngineEvent::LoadStatus {
                     tab,
                     status: klin_shared::LoadStatus::Started,
-                } => self.extensions.host.navigated(*tab),
+                } => {
+                    let out = self.extensions.host.navigated(*tab);
+                    self.extension_outgoing(event_loop, out);
+                }
                 klin_core::EngineEvent::Closed { tab } => {
-                    self.extensions.host.navigated(*tab);
+                    let out = self.extensions.host.navigated(*tab);
+                    self.extension_outgoing(event_loop, out);
                     let windows: Vec<WindowId> = self.windows.iter().map(|w| w.id).collect();
                     for window in windows {
                         if self.engine.popup_tab(window) == Some(*tab) {
                             self.close_popup(window);
                         }
+                    }
+                }
+                _ => {}
+            }
+            match &event {
+                klin_core::EngineEvent::UrlChanged { tab, url } => {
+                    let (tab, url) = (*tab, url.clone());
+                    self.navigation_event("onCommitted", tab, Some(&url));
+                }
+                klin_core::EngineEvent::LoadStatus { tab, status } => {
+                    let tab = *tab;
+                    match status {
+                        klin_shared::LoadStatus::HeadParsed => {
+                            self.navigation_event("onDOMContentLoaded", tab, None)
+                        }
+                        klin_shared::LoadStatus::Complete => {
+                            self.navigation_event("onCompleted", tab, None)
+                        }
+                        klin_shared::LoadStatus::Started => {}
                     }
                 }
                 _ => {}
@@ -817,6 +856,7 @@ impl Running {
             }
         }
         self.update_titles();
+        self.sync_extension_tabs();
         for w in &self.windows {
             w.window.request_redraw();
         }
@@ -1438,7 +1478,12 @@ impl Running {
 
     fn close_popup(&mut self, window: WindowId) {
         if let Some(tab) = self.engine.close_popup(window) {
-            self.extensions.host.navigated(tab);
+            let out = self.extensions.host.navigated(tab);
+            for item in out {
+                if let klin_extensions::host::Outgoing::Eval { tab, script } = item {
+                    self.engine.evaluate(tab, script);
+                }
+            }
         }
         if let Some(w) = self.win_mut(window) {
             w.ui.popup_closed();

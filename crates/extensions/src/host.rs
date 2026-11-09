@@ -85,12 +85,31 @@ fn base_domain(host: &str) -> &str {
     psl::domain_str(host).unwrap_or(host)
 }
 
+struct Port {
+    uuid: String,
+    opener: TabId,
+    others: Vec<TabId>,
+}
+
+struct DynamicScript {
+    uuid: String,
+    owner: TabId,
+    id: String,
+    spec: crate::script::ScriptSpec,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Outgoing {
     Decide {
         request: u64,
         decision: Decision,
     },
+    EvalWithResult {
+        call: CallRef,
+        tab: TabId,
+        script: String,
+    },
+    ScriptsChanged,
     Eval {
         tab: TabId,
         script: String,
@@ -124,6 +143,9 @@ pub struct Host {
     next_wait: u64,
     listeners: Vec<Listener>,
     dnr: HashMap<String, DnrState>,
+    ports: HashMap<String, Port>,
+    dynamic_scripts: Vec<DynamicScript>,
+    active_tab: Option<TabId>,
 }
 
 fn reply_script(session: &Session, message: &Value) -> String {
@@ -146,6 +168,9 @@ impl Host {
             next_wait: 1,
             listeners: Vec::new(),
             dnr: HashMap::new(),
+            ports: HashMap::new(),
+            dynamic_scripts: Vec::new(),
+            active_tab: None,
         }
     }
 
@@ -165,6 +190,8 @@ impl Host {
 
     pub fn remove(&mut self, uuid: &str) -> Option<Extension> {
         self.sessions.retain(|(_, u), _| u != uuid);
+        self.ports.retain(|_, p| p.uuid != uuid);
+        self.dynamic_scripts.retain(|d| d.uuid != uuid);
         self.storage.retain(|(u, _), _| u != uuid);
         self.listeners.retain(|l| l.uuid != uuid);
         self.dnr.remove(uuid);
@@ -377,6 +404,13 @@ impl Host {
                 });
             }
         }
+        log::debug!(
+            target: "extensions",
+            "request {}: {} listeners, {} blocking",
+            request.id,
+            self.listeners.len(),
+            blocking.len()
+        );
         if blocking.is_empty() {
             let decision = redirect.map_or(Decision::Continue, Decision::Redirect);
             return (Some(decision), out);
@@ -415,9 +449,172 @@ impl Host {
         self.extensions.values()
     }
 
-    pub fn navigated(&mut self, tab: TabId) {
+    pub fn navigated(&mut self, tab: TabId) -> Vec<Outgoing> {
+        let mut out = Vec::new();
+        let closed: Vec<String> = self
+            .ports
+            .iter()
+            .filter(|(_, p)| p.opener == tab || p.others.contains(&tab))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in closed {
+            out.extend(self.close_port(&id, Some(tab)));
+        }
         self.sessions.retain(|(t, _), _| *t != tab);
         self.listeners.retain(|l| l.tab != tab);
+        let before = self.dynamic_scripts.len();
+        self.dynamic_scripts.retain(|d| d.owner != tab);
+        if self.dynamic_scripts.len() != before {
+            out.push(Outgoing::ScriptsChanged);
+        }
+        out
+    }
+
+    pub fn dynamic_scripts(&self, uuid: &str) -> Vec<crate::script::ScriptSpec> {
+        self.dynamic_scripts
+            .iter()
+            .filter(|d| d.uuid == uuid)
+            .map(|d| d.spec.clone())
+            .collect()
+    }
+
+    fn port_message(&self, tab: TabId, uuid: &str, message: Value) -> Option<Outgoing> {
+        let session = self.sessions.get(&(tab, uuid.to_owned()))?;
+        Some(Outgoing::Eval {
+            tab,
+            script: reply_script(session, &message),
+        })
+    }
+
+    fn close_port(&mut self, id: &str, from: Option<TabId>) -> Vec<Outgoing> {
+        let Some(port) = self.ports.remove(id) else {
+            return Vec::new();
+        };
+        let message = json!({ "type": "port", "action": "disconnect", "port": id });
+        std::iter::once(port.opener)
+            .chain(port.others.iter().copied())
+            .filter(|t| Some(*t) != from)
+            .filter_map(|t| self.port_message(t, &port.uuid, message.clone()))
+            .collect()
+    }
+
+    fn handle_port(
+        &mut self,
+        tab: TabId,
+        uuid: &str,
+        session: &Session,
+        message: &Map<String, Value>,
+    ) -> Vec<Outgoing> {
+        let get = |key: &str| {
+            message
+                .get(key)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned()
+        };
+        let id = get("port");
+        if id.len() < 16 {
+            return Vec::new();
+        }
+        match get("action").as_str() {
+            "connect" => {
+                if self.ports.contains_key(&id) {
+                    return Vec::new();
+                }
+                let target_tab = message
+                    .get("tabId")
+                    .and_then(Value::as_u64)
+                    .map(TabId::from_raw);
+                let targets: Vec<TabId> = self
+                    .sessions
+                    .iter()
+                    .filter(|((t, u), s)| {
+                        u == uuid
+                            && *t != tab
+                            && match target_tab {
+                                Some(target) => *t == target && s.context == Context::Content,
+                                None => s.context == Context::Page,
+                            }
+                    })
+                    .map(|((t, _), _)| *t)
+                    .collect();
+                if targets.is_empty() || (target_tab.is_some() && session.context != Context::Page)
+                {
+                    let message = json!({
+                        "type": "port", "action": "disconnect", "port": id,
+                        "error": "Could not establish connection. Receiving end does not exist.",
+                    });
+                    return self.port_message(tab, uuid, message).into_iter().collect();
+                }
+                let extension_id = self
+                    .extensions
+                    .get(uuid)
+                    .map(|e| e.id.clone())
+                    .unwrap_or_default();
+                let mut sender = json!({ "id": extension_id, "url": session.url });
+                if session.context == Context::Content {
+                    sender["tab"] = json!({ "id": tab.get(), "url": session.url });
+                    sender["frameId"] = json!(0);
+                }
+                let connect = json!({
+                    "type": "port", "action": "connect", "port": id,
+                    "name": get("name"), "sender": sender,
+                });
+                let out = targets
+                    .iter()
+                    .filter_map(|t| self.port_message(*t, uuid, connect.clone()))
+                    .collect();
+                self.ports.insert(
+                    id,
+                    Port {
+                        uuid: uuid.to_owned(),
+                        opener: tab,
+                        others: targets,
+                    },
+                );
+                out
+            }
+            "post" => {
+                let Some(port) = self.ports.get(&id) else {
+                    return Vec::new();
+                };
+                if port.uuid != uuid {
+                    return Vec::new();
+                }
+                let receivers: Vec<TabId> = if port.opener == tab {
+                    port.others.clone()
+                } else if port.others.contains(&tab) {
+                    vec![port.opener]
+                } else {
+                    return Vec::new();
+                };
+                let deliver = json!({
+                    "type": "port", "action": "message", "port": id,
+                    "message": message.get("message").cloned().unwrap_or(Value::Null),
+                });
+                receivers
+                    .into_iter()
+                    .filter_map(|t| self.port_message(t, uuid, deliver.clone()))
+                    .collect()
+            }
+            "disconnect" => {
+                let owned = self.ports.get(&id).is_some_and(|p| {
+                    p.uuid == uuid && (p.opener == tab || p.others.contains(&tab))
+                });
+                if owned {
+                    self.close_port(&id, Some(tab))
+                } else {
+                    Vec::new()
+                }
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn content_session(&self, tab: TabId, uuid: &str) -> Option<&Session> {
+        self.sessions
+            .get(&(tab, uuid.to_owned()))
+            .filter(|s| s.context == Context::Content)
     }
 
     pub fn has_page_session(&self, tab: TabId, uuid: &str) -> bool {
@@ -453,7 +650,10 @@ impl Host {
         let message = match result {
             Ok(Value::Null) => json!({ "type": "reply", "id": call.id }),
             Ok(value) => json!({ "type": "reply", "id": call.id, "result": value }),
-            Err(error) => json!({ "type": "reply", "id": call.id, "error": error }),
+            Err(error) => {
+                log::info!(target: "extensions", "call {} failed: {error}", call.id);
+                json!({ "type": "reply", "id": call.id, "error": error })
+            }
         };
         Some(Outgoing::Eval {
             tab: call.tab,
@@ -536,6 +736,15 @@ impl Host {
             return Vec::new();
         }
         match get("type") {
+            "port" => {
+                log::debug!(
+                    target: "extensions",
+                    "{tab} port {} {}",
+                    get("action"),
+                    message.get("message").map(|m| m.to_string().chars().take(300).collect::<String>()).unwrap_or_default()
+                );
+                self.handle_port(tab, &uuid, &session, &message)
+            }
             "call" => {
                 let id = message.get("id").and_then(Value::as_u64).unwrap_or(0);
                 let call = CallRef {
@@ -544,6 +753,7 @@ impl Host {
                     id,
                 };
                 let api = get("api").to_owned();
+                log::debug!(target: "extensions", "{tab} {api}");
                 let args = match message.get("args") {
                     Some(Value::Array(args)) => args.clone(),
                     _ => Vec::new(),
@@ -744,12 +954,7 @@ impl Host {
                         .filter_map(Value::as_str)
                         .filter_map(|p| MatchPattern::parse(p).ok())
                         .collect();
-                    if urls.is_empty() {
-                        return self
-                            .reply(&call, Err("webRequest filter needs urls".into()))
-                            .into_iter()
-                            .collect();
-                    }
+
                     let blocking = arg(3)
                         .as_array()
                         .is_some_and(|l| l.iter().any(|v| v.as_str() == Some("blocking")))
@@ -777,6 +982,29 @@ impl Host {
                     self.listeners.retain(|l| !(l.uuid == uuid && l.id == id));
                 }
                 self.reply(&call, Ok(Value::Null)).into_iter().collect()
+            }
+            "tabs.executeScript" | "tabs.insertCSS" | "tabs.removeCSS"
+                if session.context == Context::Page =>
+            {
+                self.tab_content_call(call, api, arg(0), arg(1))
+            }
+            "contentScripts.register" if session.context == Context::Page => {
+                let result = self.register_script(&uuid, call.tab, &arg(0));
+                let changed = result.is_ok();
+                let mut out: Vec<Outgoing> = self.reply(&call, result).into_iter().collect();
+                if changed {
+                    out.push(Outgoing::ScriptsChanged);
+                }
+                out
+            }
+            "contentScripts.unregister" if session.context == Context::Page => {
+                let id = arg(0).as_str().unwrap_or_default().to_owned();
+                self.dynamic_scripts
+                    .retain(|d| !(d.uuid == uuid && d.id == id));
+                let mut out: Vec<Outgoing> =
+                    self.reply(&call, Ok(Value::Null)).into_iter().collect();
+                out.push(Outgoing::ScriptsChanged);
+                out
             }
             _ if api.starts_with("declarativeNetRequest.") && session.context == Context::Page => {
                 let result = self.dnr_api(&uuid, api, arg(0));
@@ -825,6 +1053,166 @@ impl Host {
 }
 
 impl Host {
+    fn read_source(&self, uuid: &str, value: &Value) -> Result<String, String> {
+        if let Some(code) = value.get("code").and_then(Value::as_str) {
+            return Ok(code.to_owned());
+        }
+        let file = value
+            .get("file")
+            .and_then(Value::as_str)
+            .ok_or("Either code or file must be specified")?;
+        let extension = self.extensions.get(uuid).ok_or("Unknown extension")?;
+        extension.package.read_text(file).map_err(|e| e.to_string())
+    }
+
+    fn register_script(
+        &mut self,
+        uuid: &str,
+        owner: TabId,
+        options: &Value,
+    ) -> Result<Value, String> {
+        let patterns = |key: &str| -> Result<Vec<MatchPattern>, String> {
+            options
+                .get(key)
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(|p| MatchPattern::parse(p).map_err(|e| e.to_string()))
+                .collect()
+        };
+        let strings = |key: &str| -> Vec<String> {
+            options
+                .get(key)
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        };
+        let sources = |key: &str| -> Result<Vec<String>, String> {
+            options
+                .get(key)
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .map(|v| self.read_source(uuid, v))
+                .collect()
+        };
+        let matches = patterns("matches")?;
+        if matches.is_empty() {
+            return Err("matches must not be empty".into());
+        }
+        let spec = crate::script::ScriptSpec {
+            matches,
+            exclude_matches: patterns("excludeMatches")?,
+            include_globs: strings("includeGlobs"),
+            exclude_globs: strings("excludeGlobs"),
+            run_at: match options.get("runAt").and_then(Value::as_str) {
+                Some("document_start") => crate::manifest::RunAt::DocumentStart,
+                Some("document_end") => crate::manifest::RunAt::DocumentEnd,
+                _ => crate::manifest::RunAt::DocumentIdle,
+            },
+            js: sources("js")?,
+            css: sources("css")?,
+        };
+        let id = format!("{}-{}", uuid, self.next_wait);
+        self.next_wait += 1;
+        self.dynamic_scripts.push(DynamicScript {
+            uuid: uuid.to_owned(),
+            owner,
+            id: id.clone(),
+            spec,
+        });
+        Ok(json!(id))
+    }
+
+    fn tab_content_call(
+        &mut self,
+        call: CallRef,
+        api: &str,
+        tab_arg: Value,
+        details: Value,
+    ) -> Vec<Outgoing> {
+        let uuid = call.uuid.clone();
+        let target = match tab_arg.as_u64() {
+            Some(id) => TabId::from_raw(id),
+            None => match self.active_tab {
+                Some(tab) => tab,
+                None => {
+                    return self
+                        .reply(&call, Err("No active tab".into()))
+                        .into_iter()
+                        .collect();
+                }
+            },
+        };
+        let Some(session) = self.content_session(target, &uuid).cloned() else {
+            return self
+                .reply(&call, Err("Missing host permission for the tab".into()))
+                .into_iter()
+                .collect();
+        };
+        let source = match self.read_source(&uuid, &details) {
+            Ok(source) => source,
+            Err(error) => return self.reply(&call, Err(error)).into_iter().collect(),
+        };
+        log::debug!(target: "extensions", "{api}: {} bytes: {}", source.len(), source.chars().take(400).collect::<String>());
+        let entry = crate::script::value_for_js(&Value::String(session.entry.clone()));
+        let token = crate::script::value_for_js(&Value::String(session.token.clone()));
+        let script = if api == "tabs.executeScript" {
+            format!(
+                "{{ const __klin = window[{entry}]({token}, {{ type: \"api\" }}); const browser = __klin.browser; const chrome = __klin.chrome;\n{source}\n}}"
+            )
+        } else {
+            let key = details
+                .get("code")
+                .and_then(Value::as_str)
+                .map(|c| format!("code:{c}"))
+                .or_else(|| {
+                    details
+                        .get("file")
+                        .and_then(Value::as_str)
+                        .map(|f| format!("file:{f}"))
+                })
+                .unwrap_or_default();
+            let message = json!({
+                "type": "css",
+                "key": key,
+                "css": source,
+                "remove": api == "tabs.removeCSS",
+            });
+            format!(
+                "window[{entry}]({token}, {}) === true",
+                crate::script::value_for_js(&message)
+            )
+        };
+        vec![Outgoing::EvalWithResult {
+            call,
+            tab: target,
+            script,
+        }]
+    }
+
+    pub fn finish_eval(
+        &self,
+        call: &CallRef,
+        api_value: Result<Value, String>,
+        execute: bool,
+    ) -> Option<Outgoing> {
+        let value = match api_value {
+            Ok(value) if execute => Ok(json!([value])),
+            Ok(_) => Ok(Value::Null),
+            Err(error) => Err(error),
+        };
+        self.reply(call, value)
+    }
+
+    pub fn set_active_tab(&mut self, tab: Option<TabId>) {
+        self.active_tab = tab;
+    }
+
     fn dnr_api(&mut self, uuid: &str, api: &str, options: Value) -> Result<Value, String> {
         let permitted = self.extensions.get(uuid).is_some_and(|e| {
             e.manifest.has_permission("declarativeNetRequest")
@@ -1067,7 +1455,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(body, json!({"type": "reply", "id": 1, "result": {}}));
-        host.navigated(tab);
+        let _ = host.navigated(tab);
         assert!(
             call(
                 &mut host,
@@ -1290,7 +1678,7 @@ mod tests {
                 decision: Decision::Redirect("moz-extension://x/noop.js".into())
             }]
         );
-        host.navigated(background);
+        let _ = host.navigated(background);
         let (after, _) =
             host.before_request(&request(14, "https://cdn.example.com/c.js", "script"));
         assert_eq!(after, Some(Decision::Continue));

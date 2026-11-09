@@ -125,6 +125,25 @@ fn parse_find_result(json: &str) -> Option<klin_core::FindResult> {
     })
 }
 
+fn js_to_json(value: &servo::JSValue) -> serde_json::Value {
+    use serde_json::Value;
+    match value {
+        servo::JSValue::Undefined | servo::JSValue::Null => Value::Null,
+        servo::JSValue::Boolean(b) => Value::Bool(*b),
+        servo::JSValue::Number(n) => {
+            serde_json::Number::from_f64(*n).map_or(Value::Null, Value::Number)
+        }
+        servo::JSValue::String(s) => Value::String(s.clone()),
+        servo::JSValue::Array(items) => Value::Array(items.iter().map(js_to_json).collect()),
+        servo::JSValue::Object(map) => Value::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), js_to_json(v)))
+                .collect(),
+        ),
+        _ => Value::Object(serde_json::Map::new()),
+    }
+}
+
 fn non_zero(width: u32, height: u32) -> dpi::PhysicalSize<u32> {
     dpi::PhysicalSize::new(width.max(1), height.max(1))
 }
@@ -574,6 +593,21 @@ impl ServoEngine {
                 euclid::Rect::new(euclid::Point2D::new(x, y), euclid::Size2D::new(w, h)),
             )
         }))
+    }
+
+    pub fn evaluate_with_result(
+        &self,
+        tab: TabId,
+        script: String,
+        done: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        let Some(webview) = self.webview(tab) else {
+            done(Err("The tab is gone".into()));
+            return;
+        };
+        webview.evaluate_javascript(script, move |result| {
+            done(result.map(|v| js_to_json(&v)).map_err(|e| format!("{e:?}")));
+        });
     }
 
     pub fn evaluate(&self, tab: TabId, script: String) {

@@ -25,7 +25,9 @@ shortcuts, data formats, settings.
 > in a built-in viewer based on PDF.js; Ctrl+S saves the current page. Passwords are saved,
 > autofilled and managed in about:logins; they are encrypted with a key protected by Windows DPAPI
 > and can be imported from Firefox. WebExtensions run with background pages, content scripts,
-> `storage`, `tabs`, `runtime` and toolbar buttons with popups; add-ons are managed in about:addons. Not ready for everyday use.
+> `storage`, `tabs`, `runtime` and toolbar buttons with popups; add-ons are managed in about:addons.
+> Blocking `webRequest` and `declarativeNetRequest` are supported, and uBlock Origin runs: it
+> blocks requests, hides elements and shows its popup. Not ready for everyday use.
 
 The specification and architecture are in [docs/spec.md](docs/spec.md) (in Russian).
 

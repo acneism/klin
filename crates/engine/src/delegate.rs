@@ -615,6 +615,14 @@ impl WebViewDelegate for Delegate {
         message: String,
     ) {
         if !message.starts_with(klin_extensions::host::MARK) {
+            match webview.url() {
+                Some(url) if url.scheme() == "moz-extension" => {
+                    log::info!(target: "extensions", "{}{}: {message}", url.host_str().unwrap_or_default(), url.path());
+                }
+                url => {
+                    log::debug!(target: "page_console", "{}: {message}", url.map(|u| u.to_string()).unwrap_or_default())
+                }
+            }
             return;
         }
         if let Some(tab) = self.shared.tab(&webview) {

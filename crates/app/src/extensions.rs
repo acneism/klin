@@ -118,20 +118,23 @@ impl Extensions {
         self.host.add(extension);
     }
 
-    fn update_scripts(&self, engine: &mut ServoEngine) {
+    pub fn update_scripts(&self, engine: &mut ServoEngine) {
         let version = env!("CARGO_PKG_VERSION");
         let scripts = self
             .host
             .extensions()
             .map(|e| {
-                user_script(&ScriptConfig {
-                    uuid: &e.uuid,
-                    id: &e.id,
-                    manifest: &e.manifest,
-                    package: &e.package,
-                    ui_language: UI_LOCALE,
-                    browser_version: version,
-                })
+                user_script(
+                    &ScriptConfig {
+                        uuid: &e.uuid,
+                        id: &e.id,
+                        manifest: &e.manifest,
+                        package: &e.package,
+                        ui_language: UI_LOCALE,
+                        browser_version: version,
+                    },
+                    &self.host.dynamic_scripts(&e.uuid),
+                )
             })
             .collect();
         engine.set_extension_scripts(scripts);
@@ -290,6 +293,14 @@ impl Extensions {
             .collect();
         infos.sort_by_key(|i| i.name.to_lowercase());
         infos
+    }
+
+    pub fn with_permission(&self, permission: &str) -> Vec<String> {
+        self.host
+            .extensions()
+            .filter(|e| e.manifest.has_permission(permission))
+            .map(|e| e.uuid.clone())
+            .collect()
     }
 
     pub fn popup_url(&self, uuid: &str) -> Option<Url> {
