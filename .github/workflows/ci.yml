@@ -46,9 +46,26 @@ jobs:
           echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
           echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
       # Servo 0.6+ требует Clang 19 или новее.
-      - name: Install LLVM
-        run: choco install llvm -y --no-progress
+      - name: Install LLVM and pkg-config
+        run: choco install llvm pkgconfiglite -y --no-progress
       - run: clang --version
+      - name: Install GStreamer
+        shell: pwsh
+        run: |
+          $version = "1.24.12"
+          $base = "https://gstreamer.freedesktop.org/data/pkg/windows/$version/msvc"
+          foreach ($name in @("gstreamer-1.0-msvc-x86_64-$version.msi", "gstreamer-1.0-devel-msvc-x86_64-$version.msi")) {
+            Invoke-WebRequest -Uri "$base/$name" -OutFile $name
+            $process = Start-Process msiexec.exe -ArgumentList "/i", $name, "/qn", "ADDLOCAL=ALL" -Wait -PassThru
+            if ($process.ExitCode -ne 0) { throw "$name failed with $($process.ExitCode)" }
+          }
+          $root = "C:\gstreamer\1.0\msvc_x86_64\"
+          "GSTREAMER_1_0_ROOT_MSVC_X86_64=$root" >> $env:GITHUB_ENV
+          "PKG_CONFIG_PATH=${root}lib\pkgconfig" >> $env:GITHUB_ENV
+          "${root}bin" >> $env:GITHUB_PATH
       - run: cargo clippy --workspace --all-targets
       - run: cargo build --workspace
       - run: cargo test --workspace
+      - name: Bundle GStreamer next to klin.exe
+        shell: pwsh
+        run: ./tools/copy-gstreamer.ps1 -Target target/debug

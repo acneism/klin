@@ -51,11 +51,43 @@ const SESSION_INTERVAL: Duration =
 #[derive(Debug)]
 struct Wake;
 
+const MEDIA_CORE_PLUGIN: &str = "gstcoreelements.dll";
+
+fn check_media_plugins() -> Result<(), &'static str> {
+    if !cfg!(windows) {
+        return Ok(());
+    }
+    let present = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(MEDIA_CORE_PLUGIN)))
+        .is_some_and(|path| path.exists());
+    if present {
+        Ok(())
+    } else {
+        Err(MEDIA_CORE_PLUGIN)
+    }
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
         .map_err(|_| "failed to install rustls crypto provider")?;
 
+    if let Err(missing) = check_media_plugins() {
+        let text = format!(
+            "{APP_NAME} не нашёл библиотеки GStreamer для воспроизведения видео и звука: \
+             нет {missing} рядом с программой. Переустановите {APP_NAME} или, если вы \
+             собираете его сами, выполните tools/copy-gstreamer.ps1."
+        );
+        eprintln!("{text}");
+        #[cfg(windows)]
+        rfd::MessageDialog::new()
+            .set_title(APP_NAME)
+            .set_description(&text)
+            .set_level(rfd::MessageLevel::Error)
+            .show();
+        std::process::exit(1);
+    }
     let args = Args::parse(std::env::args().skip(1));
     let profile = match Profile::open(args.profile) {
         Ok(profile) => profile,
