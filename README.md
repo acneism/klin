@@ -63,7 +63,7 @@ monthly breaking changes in Servo's API are fixed in one place.
 | `app` | the `klin` binary, winit event loop | prototype |
 | `shared` | IDs and shared types | done for 0.1 |
 | `core` | window and tab model, commands, shortcuts, URIFixup, zoom | 0.1 foundation, covered by tests |
-| `engine` | `ServoEngine`: the `Engine` trait implemented on servo 0.7.0 | prototype |
+| `engine` | `ServoEngine`: the `Engine` trait implemented on servo 0.8.0 | prototype |
 | `internal-pages` | about: pages served through the `klin:` scheme | about:newtab |
 | `ui` | egui interface: tabs, navigation, address bar, link status, crash page | prototype |
 | `profile` | profile folder, `profiles.ini`, `parent.lock` | done for 0.1 |

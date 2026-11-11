@@ -48,7 +48,7 @@ Nov 6, 2026 · @Dias
 | 0.2 | Подсказки адресной строки по истории и закладкам | умная строка (ранжирование по frecency) | — |
 | 0.2 | Менеджер загрузок | Ctrl+J, панель загрузок | панель загрузок сделана в 0.1 (Ctrl+J открывает её, а не «Библиотеку»); в 0.2 — история загрузок в places |
 | 0.2 | Восстановление сессии после закрытия и сбоя | sessionstore | восстановить вкладке список переходов «Назад/Вперёд» в API нет — восстанавливается текущая страница, список сохраняется в файле (отступление) |
-| 0.2 | Приватное окно | Ctrl+Shift+P, отдельные cookies и кэш | проверено: в Servo 0.7.0 верхнеуровневая WebView всегда создаётся с `is_private = false`, API нет — нужен патч в Servo (пишет человек); пока окно не пишет историю и сессию и честно предупреждает плашкой, что cookies общие |
+| 0.2 | Приватное окно | Ctrl+Shift+P, отдельные cookies и кэш | проверено: в Servo 0.7.0 и 0.8.0 верхнеуровневая WebView всегда создаётся с `is_private = false`, API нет — нужен патч в Servo (пишет человек); пока окно не пишет историю и сессию и честно предупреждает плашкой, что cookies общие |
 | 0.2 | Поиск на странице | Ctrl+F, F3, подсветка всех совпадений | в API WebView поиска нет — сделано через `evaluate_javascript` и Selection; отступление: «Подсветить все» недоступна (в Servo нет CSS Custom Highlight API, а `Range.getClientRects` неверен) |
 | 0.2 | Настройки | разделы about:preferences и about:config | страницы рисует интерфейс (egui), а не HTML: в Servo нет привилегированных страниц и безопасного канала страница→браузер; настройки хранятся в `prefs.js` в формате Firefox; первый набор: запуск, домашняя страница, папка загрузок, «Запоминать историю», «Удалить историю», импорт |
 | 0.2 | Импорт из Firefox: закладки, история, cookies | мастер импорта данных Firefox | проверено: cookies пишутся через `SiteDataManager::set_cookie_for_url`; импорт запускается флагом `-migration` (как в Firefox), мастер с выбором данных — вместе с настройками |
@@ -180,7 +180,7 @@ pub enum Command { NewTab, CloseTab, UndoCloseTab, Back, Forward, Reload, Stop,
 
 | Что берём из Firefox | Куда | Как | Лицензия |
 | --- | --- | --- | --- |
-| places: история, закладки, frecency, поиск для адресной строки | storage | перенос: крейт требует rusqlite 0.37, Servo 0.7.0 — 0.38, а две встроенные SQLite в одной программе Cargo не допускает; перенесено без синхронизации, uniffi и glean (ноябрь 2026) | MPL 2.0 |
+| places: история, закладки, frecency, поиск для адресной строки | storage | перенос: крейт требует rusqlite 0.37, Servo 0.7.0 и 0.8.0 — 0.38, а две встроенные SQLite в одной программе Cargo не допускает; перенесено без синхронизации, uniffi и glean (ноябрь 2026) | MPL 2.0 |
 | logins: хранение и шифрование паролей | storage | готовый крейт; шифрование — через трейт `EncryptorDecryptor` (можно своё, без NSS), ключ — через свой `KeyManager` ([документация](https://mozilla.github.io/application-services/book/rust-docs/logins/encryption/index.html)) | MPL 2.0 |
 | fxa-client, sync15, sync\_manager, tabs: аккаунт и синхронизация | sync | готовые крейты; криптография Sync идёт через NSS (rc\_crypto) | MPL 2.0 |
 | remote-settings: клиент рассылки настроек | remote-settings | готовый крейт | MPL 2.0 |
@@ -210,7 +210,7 @@ pub enum Command { NewTab, CloseTab, UndoCloseTab, Back, Forward, Reload, Stop,
 
 Сидим на ежемесячных выпусках крейта `servo` с crates.io и обновляемся каждый месяц отдельной задачей. LTS на этапе разработки не подходит: в ней только исправления безопасности, а нам нужны новые возможности движка и собственные патчи.
 
-**Версии.** Первый выпуск крейта — 0.1.0 от 13 апреля 2026 года, дальше очередная версия выходит каждый месяц и может ломать API ([блог Servo](https://servo.org/blog/2026/04/13/servo-0.1.0-release/)). LTS-ветка появляется раз в 6 месяцев, поддерживается примерно 9 месяцев и получает только исправления безопасности; патч-выпуски LTS могут требовать git-зависимостей ([Servo Book, LTS](https://book.servo.org/embedding/lts-release.html)). На 6 ноября 2026 года последняя версия — 0.7.0 от 5 октября 2026 года, минимальная версия Rust — 1.88. LTS-линия — 0.1.x, последний выпуск 0.1.4 от 2 октября 2026 года; по графику её поддержка закончится примерно в январе 2027 года. Следующая LTS по графику ожидалась около октября 2026 года, но на дату проверки не объявлена. На LTS переходим, когда у браузера появится стабильный канал.
+**Версии.** Первый выпуск крейта — 0.1.0 от 13 апреля 2026 года, дальше очередная версия выходит каждый месяц и может ломать API ([блог Servo](https://servo.org/blog/2026/04/13/servo-0.1.0-release/)). LTS-ветка появляется раз в 6 месяцев, поддерживается примерно 9 месяцев и получает только исправления безопасности; патч-выпуски LTS могут требовать git-зависимостей ([Servo Book, LTS](https://book.servo.org/embedding/lts-release.html)). Klin перешёл на 0.8.0 от 7 ноября 2026 года (минимальная версия Rust — 1.88). Что пришлось поменять при переходе с 0.7.0: `WebResourceRequest::url` стал `ServoUrl` вместо `Url`; в `LoadStatus` появился `Stopped` (загрузку остановил пользователь или `window.stop()`), Klin считает его завершением загрузки, как Firefox; фича `webcrypto` переименована в `subtlecrypto`, а в `default` вошли devtools. MSE, `requestIdleCallback` и `crypto.randomUUID` вне безопасного контекста в 0.8.0 не появились, обходы остаются. LTS-линия — 0.1.x, последний выпуск 0.1.4 от 2 октября 2026 года; по графику её поддержка закончится примерно в январе 2027 года. Следующая LTS по графику ожидалась около октября 2026 года, но на дату проверки не объявлена. На LTS переходим, когда у браузера появится стабильный канал.
 
 **Что из API Servo закрывает наши потребности.** Названия сверены с экспортами крейта servo 0.5.0, изменениями 0.6–0.7 из блога Servo и документацией ветки main на doc.servo.org ([исходник lib.rs](https://docs.rs/crate/servo/0.5.0/source/lib.rs)); точные возможности каждого типа проверяем на прототипе.
 
@@ -249,7 +249,7 @@ pub enum Command { NewTab, CloseTab, UndoCloseTab, Back, Forward, Reload, Stop,
 
 **Медиа.** Аудио и видео на десктопе требуют фичи `media-gstreamer` ([Servo Book](https://github.com/servo/book/pull/223/changes)); единственный рабочий медиабэкенд servo-media — GStreamer ([servo-media](https://github.com/eerii/media)). Значит, в установщик придётся включить среду выполнения GStreamer для Windows.
 
-Фича `media-gstreamer` не входит в набор по умолчанию (в 0.7.0 по умолчанию включены `bundled`, `clipboard`, `js_jit`, `multiprocess`), её включаем явно. На Windows плагины GStreamer Servo ищет в папке рядом с исполняемым файлом ([servo.rs](https://doc.servo.org/src/servo/servo.rs.html)), это учитываем в установщике.
+Фича `media-gstreamer` не входит в набор по умолчанию, её включаем явно. В 0.8.0 в `default` добавились инструменты разработчика (`default_tooling` → `devtools`), а фича `webcrypto` переименована в `subtlecrypto`; Klin выключает набор по умолчанию и перечисляет фичи сам: `bundled`, `clipboard`, `js_jit`, `multiprocess`, `subtlecrypto`, `brotli-compression-stream`, `media-gstreamer` — тот же состав, что был с 0.7.0. WebGL, WebGPU и WebXR в Klin пока не включены, как и раньше. На Windows плагины GStreamer Servo ищет в папке рядом с исполняемым файлом ([servo.rs](https://doc.servo.org/src/servo/servo.rs.html)), это учитываем в установщике.
 
 ## Сборка, тестирование и поставка на Windows
 
@@ -257,7 +257,7 @@ pub enum Command { NewTab, CloseTab, UndoCloseTab, Back, Forward, Reload, Stop,
 
 **Окружение разработчика** (по [Servo Book для Windows](https://book.servo.org/building/windows.html) и [README Servo](https://github.com/servo/servo))
 
-- rustup с хостом `x86_64-pc-windows-msvc` (32-битный хост по умолчанию — известная причина ошибок); Rust не ниже 1.88 — минимальная версия для servo 0.7.0.
+- rustup с хостом `x86_64-pc-windows-msvc` (32-битный хост по умолчанию — известная причина ошибок); Rust не ниже 1.88 — минимальная версия для servo 0.8.0.
 - Visual Studio 2022: MSVC v143 build tools (Latest), C++ ATL для v143 и Windows SDK 10.0.19041 или новее. Лучше одна установленная версия VS.
 - Clang 19 или новее: с Servo 0.6 это обязательное требование на всех платформах ([August in Servo](https://servo.org/blog/2026/10/09/august-in-servo/)).
 - Если сборка SpiderMonkey (mozjs) падает с ошибкой GetShortPathName, включаем короткие имена файлов 8.3; после обновления mozjs может понадобиться свежий MSVC.

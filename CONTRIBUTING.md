@@ -28,7 +28,7 @@ Servo на Windows загружает плагины GStreamer из папки �
 `gstreamer1.0-libav`.
 
 Проверено на Linux (Ubuntu 24.04, Clang 18): `cargo check --workspace` и `cargo clippy`
-с servo 0.7.0 проходят, `cargo build -p klin-app` собирается за ~5 минут на 4 ядрах,
+с servo 0.8.0 проходят, `cargo build -p klin-app` собирается за ~5 минут на 4 ядрах,
 а бинарник под Xvfb показывает страницу file:// и about:newtab.
 
 ## Правила

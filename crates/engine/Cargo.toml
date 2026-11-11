@@ -17,7 +17,7 @@ servo.workspace = true
 url.workspace = true
 log.workspace = true
 euclid.workspace = true
-# Версии ниже совпадают с зависимостями servo 0.7.0: их типы проходят через API движка.
+# Версии ниже совпадают с зависимостями servo 0.8.0: их типы проходят через API движка.
 dpi = "0.1"
 http = "1.4"
 serde_json = "1"

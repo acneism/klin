@@ -31,7 +31,7 @@ authors = ["Klin contributors"]
 
 [workspace.dependencies]
 # Servo is pinned exactly: updates are a separate monthly task (docs/spec.md, «Интеграция с Servo»).
-servo = { version = "=0.7.0", default-features = true, features = ["webcrypto", "brotli-compression-stream", "media-gstreamer"] }
+servo = { version = "=0.8.0", default-features = false, features = ["bundled", "clipboard", "js_jit", "multiprocess", "subtlecrypto", "brotli-compression-stream", "media-gstreamer"] }
 
 url = "2.5"
 # Same major as servo 0.7.0, so SQLite is compiled once.

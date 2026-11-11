@@ -301,6 +301,7 @@ pub(crate) fn resource_type(destination: &str, main_frame: bool, url: &Url) -> &
 impl Delegate {
     fn load_resource(&self, webview: WebView, load: servo::WebResourceLoad) {
         let request = load.request();
+        let request_url = request.url.as_url();
         if !request.is_for_main_frame {
             let blocked = match (self.shared.blocker.borrow().as_ref(), webview.url()) {
                 (Some(blocker), Some(top)) => {
@@ -309,12 +310,12 @@ impl Delegate {
                         .tab(&webview)
                         .and_then(|tab| self.shared.window_of(tab))
                         .is_some_and(|w| self.shared.private_windows.borrow().contains(&w));
-                    blocker.classify(&request.url, &top, private)
+                    blocker.classify(request_url, &top, private)
                 }
                 _ => None,
             };
             if let Some(category) = blocked {
-                let url = request.url.clone();
+                let url = request_url.clone();
                 let response = servo::WebResourceResponse::new(url.clone());
                 load.intercept(response).cancel();
                 if let Some(tab) = self.shared.tab(&webview) {
@@ -328,15 +329,15 @@ impl Delegate {
         }
         let is_pdf = !self.shared.pdf_viewer_disabled.get()
             && request.method == http::Method::GET
-            && matches!(request.url.scheme(), "http" | "https")
-            && klin_internal_pages::resources::is_pdf_url(request.url.path());
+            && matches!(request_url.scheme(), "http" | "https")
+            && klin_internal_pages::resources::is_pdf_url(request_url.path());
         if is_pdf {
             let mut headers = http::HeaderMap::new();
             headers.insert(
                 http::header::CONTENT_TYPE,
                 http::HeaderValue::from_static("text/html; charset=utf-8"),
             );
-            let response = servo::WebResourceResponse::new(request.url.clone())
+            let response = servo::WebResourceResponse::new(request_url.clone())
                 .headers(headers)
                 .status_code(http::StatusCode::OK);
             let mut intercepted = load.intercept(response);
@@ -345,7 +346,7 @@ impl Delegate {
             return;
         }
         let is_download = request.method == http::Method::GET
-            && klin_core::downloads::looks_like_download(&request.url);
+            && klin_core::downloads::looks_like_download(request_url);
         if !is_download {
             self.hold(webview, load);
             return;
@@ -353,8 +354,8 @@ impl Delegate {
         let Some(tab) = self.shared.tab(&webview) else {
             return;
         };
-        let url = request.url.clone();
-        let referrer = request.referrer_url.clone();
+        let url = request_url.clone();
+        let referrer = request.referrer_url.clone().map(servo::ServoUrl::into_url);
 
         let response =
             servo::WebResourceResponse::new(url.clone()).status_code(http::StatusCode::NO_CONTENT);
@@ -375,9 +376,13 @@ impl Delegate {
         let info = klin_core::WebRequestInfo {
             id,
             tab,
-            url: request.url.clone(),
+            url: request.url.as_url().clone(),
             method: request.method.to_string(),
-            kind: resource_type(&destination, request.is_for_main_frame, &request.url),
+            kind: resource_type(
+                &destination,
+                request.is_for_main_frame,
+                request.url.as_url(),
+            ),
             document: if request.is_for_main_frame {
                 None
             } else {
@@ -416,7 +421,7 @@ impl WebViewDelegate for Delegate {
         let status = match status {
             servo::LoadStatus::Started => LoadStatus::Started,
             servo::LoadStatus::HeadParsed => LoadStatus::HeadParsed,
-            servo::LoadStatus::Complete => LoadStatus::Complete,
+            servo::LoadStatus::Complete | servo::LoadStatus::Stopped => LoadStatus::Complete,
         };
         if status == LoadStatus::Complete
             && let Some(tab) = self.shared.tab(&webview)

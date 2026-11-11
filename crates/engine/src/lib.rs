@@ -364,7 +364,7 @@ impl ServoEngine {
         let Some((load, _, tab)) = self.shared.held.borrow_mut().remove(&id) else {
             return;
         };
-        let url = load.request().url.clone();
+        let url = load.request().url.as_url().clone();
         match decision {
             klin_core::RequestDecision::Continue => drop(load),
             klin_core::RequestDecision::Cancel => {
